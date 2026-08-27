@@ -4,6 +4,7 @@ Mounted on the same FastAPI app. The page itself is a single static HTML
 file (dashboard.html) with zero external dependencies.
 """
 
+import datetime
 import json
 import os
 import re
@@ -104,15 +105,6 @@ def asset(name: str):
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
-@router.get("/dashboard/preview", response_class=HTMLResponse)
-def page_preview():
-    target = os.path.join(os.path.dirname(__file__), "dashboard_v2.html")
-    try:
-        with open(target, encoding="utf-8") as f:
-            return HTMLResponse(f.read())
-    except FileNotFoundError:
-        return HTMLResponse("<h1>dashboard_v2.html missing</h1>", status_code=404)
-
 
 @router.get("/dashboard", response_class=HTMLResponse)
 def page():
@@ -146,6 +138,31 @@ def api_requests(limit: int = 50):
 @router.get("/dashboard/api/events")
 def api_events(limit: int = 50):
     return stats.recent_events(max(1, min(limit, 200)))
+
+
+@router.get("/dashboard/api/events/counts")
+def api_event_counts():
+    try:
+        con = stats._ro()
+        today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        row_today = con.execute("SELECT COUNT(*) as n FROM events WHERE ts >= ?", (today_start,)).fetchone()
+        row_conv = con.execute("SELECT COUNT(*) as n FROM events WHERE kind = 'tool_convert'").fetchone()
+        row_inj = con.execute("SELECT COUNT(*) as n FROM events WHERE kind = 'deferred_inject'").fetchone()
+        row_learn = con.execute("SELECT COUNT(*) as n FROM events WHERE kind = 'namespace_learn'").fetchone()
+        row_last_learn = con.execute("SELECT ts FROM events WHERE kind = 'namespace_learn' ORDER BY ts DESC LIMIT 1").fetchone()
+        con.close()
+        last_learn_time = ""
+        if row_last_learn and row_last_learn["ts"]:
+            last_learn_time = datetime.datetime.fromtimestamp(row_last_learn["ts"]).strftime("%H:%M:%S")
+        return {
+            "events_today": row_today["n"] if row_today else 0,
+            "total_convert": row_conv["n"] if row_conv else 0,
+            "total_inject": row_inj["n"] if row_inj else 0,
+            "total_learn": row_learn["n"] if row_learn else 0,
+            "last_learn_time": last_learn_time,
+        }
+    except Exception as e:
+        return {"events_today": 0, "total_convert": 0, "total_inject": 0, "total_learn": 0, "last_learn_time": ""}
 
 
 @router.get("/dashboard/api/health")
@@ -392,6 +409,9 @@ def ensure_models_in_catalog(models: list):
                 new_m["slug"] = m_str
                 new_m["display_name"] = m_str
                 new_m["description"] = f"Custom Model: {m_str}"
+                if "base_instructions" in new_m and isinstance(new_m["base_instructions"], str):
+                    old_name = template.get("slug", "MiniMax-M3")
+                    new_m["base_instructions"] = new_m["base_instructions"].replace(old_name, m_str)
                 data["models"].append(new_m)
                 existing[m_str] = new_m
                 updated = True

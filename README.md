@@ -20,8 +20,7 @@
 |  * 动态 Key 智能注入: 解决客户端内存缓存旧 Key 引起的 401 报错，免重启热切  |
 |  * 七层协议改写: tool_search 转 function、namespace 展平、SSE 流缓冲合成    |
 |  * 多渠道模型轮换: Kimi k3 / Gemini Antigravity / MiniMax-M3 / 自定义渠道 |
-|  * 生产控制台 (正式版): http://127.0.0.1:15731/dashboard (极客暗色 UI)    |
-|  * Next-Gen 控制台 (预览): http://127.0.0.1:15731/dashboard/preview     |
+|  * 可视化控制台: http://127.0.0.1:15731/dashboard (极客暗色 UI、监控与测活) |
 +--------------+---------------------+---------------------+--------------+
                |                     |                     |
                v                     v                     v
@@ -46,9 +45,7 @@
   * 具备自定义模型自动入库机制：新增渠道时自动同步写入 `~/.codex/models.json` 模型字典，供 Codex 客户端原生检索识别。
 * **免重启零感知热切**：出站请求由网关按当前配置动态重写 Authorization 头并注入对应厂商专属 Key，彻底脱耦客户端内存中的旧凭证缓存，切换立即可用。
 * **原生配置原子联动**：切换时原子同步回写 `~/.codex/config.toml`（`model`）与 `~/.codex/auth.json`（`OPENAI_API_KEY`）。
-* **多版本可视化仪表盘**：
-  * **生产控制台（正式版）**：`http://127.0.0.1:15731/dashboard`，单文件零外部依赖，极客暗色 UI，纯矢量暗色图标资产，0 Emoji；
-  * **Next-Gen 控制台（预览版）**：`http://127.0.0.1:15731/dashboard/preview`，遵循 Stripe / Linear 2026 / Raycast 标准，采用“左侧紧凑工作坞 + 内嵌 Sparkline 微缩走势图 + 实时链路跟踪表格”现代化架构。
+* **可视化仪表盘 (SPA)**：挂载于 `http://127.0.0.1:15731/dashboard`，单文件零外部依赖，极客暗色 UI，纯矢量暗色图标资产，0 Emoji。提供实时延迟、Token 用量走势、模型消耗分布与在线实时测活。
 * **协议安全改写与自学习**：
   * 完整修复 `tool_search` 孤儿调用、工具参数反向补全；
   * 动态学习双向流量中的 Function -> Namespace 映射并本地持久化，支持在控制台实时审查与单键删除。
@@ -73,8 +70,7 @@ E:\codex_root\
 │   ├── kimi_bridge.py                 # 网关核心服务（多厂商路由、免重启 Key 注入、协议补丁）
 │   ├── antigravity_bridge.py          # Antigravity 专用轻量桥接服务
 │   ├── dashboard.py                   # 仪表盘 FastAPI 管理路由与数据分析接口
-│   ├── dashboard.html                 # 生产仪表盘主界面（单页 SPA，极客暗色 UI，矢量资产）
-│   ├── dashboard_v2.html              # Next-Gen 仪表盘预览界面（Stripe/Linear 设计标准，侧边坞架构）
+│   ├── dashboard.html                 # 仪表盘控制台主界面（单页 SPA，极客暗色 UI，纯矢量资产，0 Emoji）
 │   ├── bridge_stats.py                # Token 消耗与请求延迟 SQLite 异步采集库
 │   ├── bridge_config.example.json     # 多厂商配置模板（含自定义渠道结构示例）
 │   └── assets/                        # 字体（Smiley Sans）、动效库（GSAP）与暗色状态图标资产
@@ -132,16 +128,12 @@ powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
 ```
 
 ### 2. 访问控制台
-网关默认监听 `127.0.0.1:15731`：
-* **生产控制台（正式版）**：
-  ```
-  http://127.0.0.1:15731/dashboard
-  ```
-* **Next-Gen 控制台（预览版）**：
-  ```
-  http://127.0.0.1:15731/dashboard/preview
-  ```
-在控制台中可查看请求统计、Token 吞吐、近 50 条实时链路跟踪，并在不同渠道间即时热切与连通性测活。
+在浏览器中打开：
+```
+http://127.0.0.1:15731/dashboard
+```
+* **监控页**：查看请求统计、Token 吞吐走势与实时往返延迟。
+* **渠道页**：在线管理、热切、测活供应商（Kimi、Gemini、MiniMax、智谱 BigModel 与自定义渠道）。
 
 ### 3. 应用客户端加固 Patch（可选，防止 js_repl 被反写）
 ```powershell

@@ -39,6 +39,18 @@
       ],
       "active_model": "MiniMax-M3",
       "key": "sk-your-minimax-key"
+    },
+    "zhipu": {
+      "id": "zhipu",
+      "name": "智谱 BigModel",
+      "upstream": "https://open.bigmodel.cn/api",
+      "models": [
+        "GLM-5.3",
+        "GLM-5.3-Flash"
+      ],
+      "active_model": "GLM-5.3-Flash",
+      "key": "***REMOVED***",
+      "custom": true
     }
   }
 }

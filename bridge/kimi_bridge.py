@@ -553,25 +553,6 @@ load_ns_map()
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy(path: str, request: Request):
     t0 = time.time()
-    current_upstream = UPSTREAM
-    active_key = None
-    try:
-        cfg = dash.load_config() if dash else {}
-        active_pid = cfg.get("active_provider")
-        providers = cfg.get("providers", {})
-        if active_pid and active_pid in providers:
-            p_up = providers[active_pid].get("upstream")
-            if p_up:
-                current_upstream = p_up.rstrip("/")
-            active_key = providers[active_pid].get("key")
-        if not active_key:
-            auth_path = os.path.join(os.path.dirname(_HERE), "auth.json")
-            if os.path.exists(auth_path):
-                with open(auth_path, "r", encoding="utf-8") as _af:
-                    active_key = json.load(_af).get("OPENAI_API_KEY")
-    except Exception as _e:
-        log.warning("Failed to resolve dynamic provider/key: %s", _e)
-    url = f"{current_upstream}/{path}"
     raw = await request.body()
     model = None
     if request.method == "POST" and raw:
@@ -580,28 +561,54 @@ async def proxy(path: str, request: Request):
         except Exception:
             pass
         raw = normalize_body(raw)
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP}
 
-    # 动态注入当前活跃供应商的生效 Key，实现真正的免重启 Codex 热切
+    current_upstream = UPSTREAM
+    active_key = None
+    matched_pid = None
+
     try:
-        cfg = dash.load_config()
-        active_pid = cfg.get("active_provider")
+        cfg = dash.load_config() if dash else {}
         providers = cfg.get("providers", {})
-        active_key = None
-        if active_pid and active_pid in providers:
-            active_key = providers[active_pid].get("key")
+        active_pid = cfg.get("active_provider")
+
+        # 智能模型反向路由 (Model-Aware Smart Routing):
+        # 若请求声明了具体 model，优先按模型归属自动匹配供应商
+        if model:
+            for pid, pinfo in providers.items():
+                p_models = pinfo.get("models", [])
+                p_act_m = pinfo.get("active_model")
+                if model in p_models or model == p_act_m or any(str(model).lower() == str(m).lower() for m in p_models):
+                    matched_pid = pid
+                    break
+
+        chosen_pid = matched_pid if matched_pid else (active_pid if active_pid in providers else None)
+
+        if chosen_pid and chosen_pid in providers:
+            p_info = providers[chosen_pid]
+            p_up = p_info.get("upstream")
+            if p_up:
+                current_upstream = p_up.rstrip("/")
+            active_key = p_info.get("key")
+            if matched_pid and matched_pid != active_pid:
+                log.info("  routing: auto-routed model '%s' to provider '%s' (%s)", model, matched_pid, current_upstream)
+
         if not active_key:
             auth_path = os.path.join(os.path.dirname(_HERE), "auth.json")
             if os.path.exists(auth_path):
                 with open(auth_path, "r", encoding="utf-8") as _af:
                     active_key = json.load(_af).get("OPENAI_API_KEY")
-        if active_key:
-            for hk in list(headers.keys()):
-                if hk.lower() == "authorization":
-                    del headers[hk]
-            headers["authorization"] = f"Bearer {active_key}"
     except Exception as _e:
-        log.warning("Failed to inject active provider key: %s", _e)
+        log.warning("Failed to resolve dynamic provider/key: %s", _e)
+
+    url = f"{current_upstream}/{path}"
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP}
+
+    # 动态注入当前解析出的生效 Key，实现真正的免重启零感知热切
+    if active_key:
+        for hk in list(headers.keys()):
+            if hk.lower() == "authorization":
+                del headers[hk]
+        headers["authorization"] = f"Bearer {active_key}"
 
     try:
         req = client.build_request(
