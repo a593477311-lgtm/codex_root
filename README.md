@@ -33,7 +33,8 @@
 ## 两大核心子系统
 
 ### 一、网关与管理系统 (`bridge/`)
-* **多厂商一键轮换**：支持 **Kimi For Coding (`k3`)**、**Gemini (`gemini-3.7-flash-high`)**、**MiniMax (`MiniMax-M3`)**，可在网页上卡片化点选切换。
+* **全渠道模型中枢（内置 + 自定义）**：预置支持 **Kimi For Coding (k3)**、**Gemini (gemini-3.7-flash-high)**、**MiniMax (MiniMax-M3)**，并提供强大的**自定义供应商**能力（支持自主添加 DeepSeek、Ollama、SiliconFlow、Groq 等任意 OpenAI Responses 兼容端点）。
+* **自定义渠道生命周期管理**：支持在线新增、编辑配置、单键删除与前置连通性测活；保存后自动将新模型同步注册进 ~/.codex/models.json 模型字典，让 Codex 客户端原生识别。
 * **免重启零感知热切**：出站请求拦截并自动注入对应厂商 API Key，彻底脱耦客户端内存缓存，随时切随时生效。
 * **原生配置原子联动**：切换时原子同步写回 `~/.codex/config.toml`（`model`）与 `~/.codex/auth.json`（`OPENAI_API_KEY`）。
 * **可视化仪表盘 (SPA)**：挂载于 `http://127.0.0.1:15731/dashboard`，提供实时延迟、Token 用量趋势、10 周活跃热力图、模型消耗分布与在线实时测活。

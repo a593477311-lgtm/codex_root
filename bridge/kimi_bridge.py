@@ -553,7 +553,25 @@ load_ns_map()
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy(path: str, request: Request):
     t0 = time.time()
-    url = f"{UPSTREAM}/{path}"
+    current_upstream = UPSTREAM
+    active_key = None
+    try:
+        cfg = dash.load_config() if dash else {}
+        active_pid = cfg.get("active_provider")
+        providers = cfg.get("providers", {})
+        if active_pid and active_pid in providers:
+            p_up = providers[active_pid].get("upstream")
+            if p_up:
+                current_upstream = p_up.rstrip("/")
+            active_key = providers[active_pid].get("key")
+        if not active_key:
+            auth_path = os.path.join(os.path.dirname(_HERE), "auth.json")
+            if os.path.exists(auth_path):
+                with open(auth_path, "r", encoding="utf-8") as _af:
+                    active_key = json.load(_af).get("OPENAI_API_KEY")
+    except Exception as _e:
+        log.warning("Failed to resolve dynamic provider/key: %s", _e)
+    url = f"{current_upstream}/{path}"
     raw = await request.body()
     model = None
     if request.method == "POST" and raw:

@@ -190,7 +190,15 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
     <!-- 模块一：渠道单选卡与激活模型 -->
     <div class="panel">
       <h3>渠道与模型中枢<span class="right">选择后自动同步写回原生 config.toml & auth.json</span></h3>
-      <div id="providerCards" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <span style="font-size:12px;color:var(--sub)">可选供应商</span>
+        <div style="display:flex;gap:6px">
+          <button class="btn ghost" style="padding:2px 8px;font-size:11px" onclick="openEditProviderModal()">✏️ 编辑当前渠道</button>
+          <button class="btn ghost" style="padding:2px 8px;font-size:11px;color:#f85149" onclick="deleteCurrentProvider()">🗑️ 删除</button>
+          <button class="btn" style="padding:2px 10px;font-size:11px;background:var(--v1)" onclick="openAddProviderModal()">+ 添加自定义渠道</button>
+        </div>
+      </div>
+      <div id="providerCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-bottom:14px">
         <!-- 渠道选择卡片动态渲染 -->
       </div>
       <div class="field">
@@ -258,7 +266,148 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
 </div>
 <div id="tip"></div>
 <div id="toast"></div>
-<script src="/dashboard/assets/gsap.min.js"></script>
+<script src="/dashboard/assets/gsap.min.js">
+let editingProviderId = null;
+
+function openAddProviderModal(){
+  editingProviderId = null;
+  const mTitle = $("#modalTitle"); if(mTitle) mTitle.textContent = "添加自定义供应商";
+  const idInp = $("#mProvId"); if(idInp) { idInp.value = ""; idInp.disabled = false; }
+  const nameInp = $("#mProvName"); if(nameInp) nameInp.value = "";
+  const upInp = $("#mProvUpstream"); if(upInp) upInp.value = "";
+  const modInp = $("#mProvModels"); if(modInp) modInp.value = "";
+  const keyInp = $("#mProvKey"); if(keyInp) keyInp.value = "";
+  const res = $("#modalPingResult"); if(res) res.innerHTML = "";
+  const modal = $("#providerModal"); if(modal) modal.classList.remove("hidden");
+}
+
+function openEditProviderModal(){
+  if(!pData || !pData.providers) return;
+  const curP = pData.providers[selectedPid];
+  if(!curP) return;
+  editingProviderId = selectedPid;
+  const mTitle = $("#modalTitle"); if(mTitle) mTitle.textContent = "编辑供应商: " + (curP.name || selectedPid);
+  const idInp = $("#mProvId"); if(idInp) { idInp.value = selectedPid; idInp.disabled = true; }
+  const nameInp = $("#mProvName"); if(nameInp) nameInp.value = curP.name || "";
+  const upInp = $("#mProvUpstream"); if(upInp) upInp.value = curP.upstream || "";
+  const modInp = $("#mProvModels"); if(modInp) modInp.value = (curP.models || []).join(", ");
+  const keyInp = $("#mProvKey"); if(keyInp) keyInp.value = curP.key || "";
+  const res = $("#modalPingResult"); if(res) res.innerHTML = "";
+  const modal = $("#providerModal"); if(modal) modal.classList.remove("hidden");
+}
+
+function closeProviderModal(){
+  const modal = $("#providerModal"); if(modal) modal.classList.add("hidden");
+}
+
+async function testModalPing(){
+  const upstream = ($("#mProvUpstream") ? $("#mProvUpstream").value : "").trim();
+  const key = ($("#mProvKey") ? $("#mProvKey").value : "").trim();
+  const rawModels = ($("#mProvModels") ? $("#mProvModels").value : "").trim();
+  const models = rawModels.split(/[,;\n\r]+/).map(s=>s.trim()).filter(Boolean);
+  const model = models[0] || "default";
+  const res = $("#modalPingResult");
+  if(!upstream){
+    if(res) res.innerHTML = `<span style="color:#f85149">请先填写上游 Base URL</span>`;
+    return;
+  }
+  if(res) res.innerHTML = `<span class="pill">测试中…</span>`;
+  try {
+    const r = await fetch("/dashboard/api/test-provider", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({upstream, key, model})
+    });
+    const j = await r.json();
+    if(j.ok){
+      if(res) res.innerHTML = `<span class="pill g">✓ ${j.latency_ms}ms 响应正常 (${j.message || '200 OK'})</span>`;
+    } else {
+      if(res) res.innerHTML = `<span class="pill r">✗ ${j.message || '连通失败'}</span>`;
+    }
+  } catch(e) {
+    if(res) res.innerHTML = `<span class="pill r">✗ 请求异常: ${e.message || e}</span>`;
+  }
+}
+
+async function saveCustomProvider(){
+  const idInp = $("#mProvId");
+  const nameInp = $("#mProvName");
+  const upInp = $("#mProvUpstream");
+  const modInp = $("#mProvModels");
+  const keyInp = $("#mProvKey");
+
+  const id = idInp ? idInp.value.trim().toLowerCase() : "";
+  const name = nameInp ? nameInp.value.trim() : "";
+  const upstream = upInp ? upInp.value.trim() : "";
+  const rawModels = modInp ? modInp.value.trim() : "";
+  const key = keyInp ? keyInp.value.trim() : "";
+
+  if(!id || !/^[a-zA-Z0-9_\-]+$/.test(id)){
+    toast("供应商 ID 必须为英文字母、数字或连字符", true);
+    return;
+  }
+  if(!name){
+    toast("请输入展示名称", true);
+    return;
+  }
+  if(!upstream || !/^https?:\/\//i.test(upstream)){
+    toast("上游 Base URL 必须以 http:// 或 https:// 开头", true);
+    return;
+  }
+
+  const models = rawModels.split(/[,;\n\r]+/).map(s=>s.trim()).filter(Boolean);
+  if(!models.length) models.push(id);
+
+  try {
+    const r = await fetch("/dashboard/api/save-provider", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({id, name, upstream, models, key, active_model: models[0]})
+    });
+    const j = await r.json();
+    if(j.ok){
+      toast(`供应商 [${name}] 保存成功！`);
+      closeProviderModal();
+      selectedPid = id;
+      await loadProviders();
+    } else {
+      toast("保存失败: " + (j.error || "未知错误"), true);
+    }
+  } catch(e) {
+    toast("保存异常: " + (e.message || e), true);
+  }
+}
+
+async function deleteCurrentProvider(){
+  if(!pData || !pData.providers) return;
+  if(selectedPid === pData.active_provider){
+    alert(`无法删除当前正在激活的供应商 [${selectedPid}]！请先切换至其他供应商后再删除。`);
+    return;
+  }
+  const curP = pData.providers[selectedPid] || {};
+  if(!confirm(`确定要删除供应商 [${curP.name || selectedPid}] 吗？`)){
+    return;
+  }
+  try {
+    const r = await fetch("/dashboard/api/delete-provider", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({id: selectedPid})
+    });
+    const j = await r.json();
+    if(j.ok){
+      toast(`已删除供应商 [${curP.name || selectedPid}]`);
+      selectedPid = pData.active_provider;
+      await loadProviders();
+    } else {
+      toast("删除失败: " + (j.error || "未知错误"), true);
+    }
+  } catch(e) {
+    toast("删除异常: " + (e.message || e), true);
+  }
+}
+
+</script>
 <script>
 const $=s=>document.querySelector(s);
 let days=7,picked=null,lastRows=[],seenKeys=new Set(),firstRender=true,pendingAnim=true;
@@ -582,12 +731,14 @@ function renderProviderUI(){
     const p = pList[id];
     const isAct = id === selectedPid;
     const modelTag = (p.models && p.models.length) ? p.models[0] : "";
-    return `<div onclick="selectProvider('${id}')" style="background:${isAct?"linear-gradient(145deg,#2f2847,#23212f)":"#212028"};border:1px solid ${isAct?"var(--v1)":"var(--border)"};border-radius:10px;padding:10px 12px;cursor:pointer;transition:all .15s">
+    const isCustom = p.custom || !['kimi','gemini','minimax'].includes(id);
+    return `<div onclick="selectProvider('${id}')" style="background:${isAct?"linear-gradient(145deg,#2f2847,#23212f)":"#212028"};border:1px solid ${isAct?"var(--v1)":"var(--border)"};border-radius:10px;padding:10px 12px;cursor:pointer;transition:all .15s;position:relative">
       <div style="font-weight:700;font-size:12.5px;color:${isAct?"#fff":"var(--sub)"};display:flex;align-items:center;gap:6px">
         <input type="radio" name="provRadio" ${isAct?"checked":""} style="pointer-events:none">
-        ${p.name || id}
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.name || id}">${p.name || id}</span>
       </div>
-      <div style="font-size:11px;color:var(--faint);margin-top:4px">${modelTag}</div>
+      <div style="font-size:11px;color:var(--faint);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${modelTag}</div>
+      ${isCustom ? `<span style="position:absolute;top:6px;right:8px;font-size:9px;color:var(--v2);background:#1a1924;border:1px solid var(--v2);border-radius:4px;padding:0 3px">自定义</span>` : ''}
     </div>`;
   }).join("");
   
@@ -710,6 +861,188 @@ else if(location.hash === "#events") showTab("events");
 
 setInterval(()=>{if(!$("#page-dash").classList.contains("hidden"))loadDash()},10000);
 setInterval(loadHealth,30000);
+
+let editingProviderId = null;
+
+function openAddProviderModal(){
+  editingProviderId = null;
+  const mTitle = $("#modalTitle"); if(mTitle) mTitle.textContent = "添加自定义供应商";
+  const idInp = $("#mProvId"); if(idInp) { idInp.value = ""; idInp.disabled = false; }
+  const nameInp = $("#mProvName"); if(nameInp) nameInp.value = "";
+  const upInp = $("#mProvUpstream"); if(upInp) upInp.value = "";
+  const modInp = $("#mProvModels"); if(modInp) modInp.value = "";
+  const keyInp = $("#mProvKey"); if(keyInp) keyInp.value = "";
+  const res = $("#modalPingResult"); if(res) res.innerHTML = "";
+  const modal = $("#providerModal"); if(modal) modal.classList.remove("hidden");
+}
+
+function openEditProviderModal(){
+  if(!pData || !pData.providers) return;
+  const curP = pData.providers[selectedPid];
+  if(!curP) return;
+  editingProviderId = selectedPid;
+  const mTitle = $("#modalTitle"); if(mTitle) mTitle.textContent = "编辑供应商: " + (curP.name || selectedPid);
+  const idInp = $("#mProvId"); if(idInp) { idInp.value = selectedPid; idInp.disabled = true; }
+  const nameInp = $("#mProvName"); if(nameInp) nameInp.value = curP.name || "";
+  const upInp = $("#mProvUpstream"); if(upInp) upInp.value = curP.upstream || "";
+  const modInp = $("#mProvModels"); if(modInp) modInp.value = (curP.models || []).join(", ");
+  const keyInp = $("#mProvKey"); if(keyInp) keyInp.value = curP.key || "";
+  const res = $("#modalPingResult"); if(res) res.innerHTML = "";
+  const modal = $("#providerModal"); if(modal) modal.classList.remove("hidden");
+}
+
+function closeProviderModal(){
+  const modal = $("#providerModal"); if(modal) modal.classList.add("hidden");
+}
+
+async function testModalPing(){
+  const upstream = ($("#mProvUpstream") ? $("#mProvUpstream").value : "").trim();
+  const key = ($("#mProvKey") ? $("#mProvKey").value : "").trim();
+  const rawModels = ($("#mProvModels") ? $("#mProvModels").value : "").trim();
+  const models = rawModels.split(/[,;\n\r]+/).map(s=>s.trim()).filter(Boolean);
+  const model = models[0] || "default";
+  const res = $("#modalPingResult");
+  if(!upstream){
+    if(res) res.innerHTML = `<span style="color:#f85149">请先填写上游 Base URL</span>`;
+    return;
+  }
+  if(res) res.innerHTML = `<span class="pill">测试中…</span>`;
+  try {
+    const r = await fetch("/dashboard/api/test-provider", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({upstream, key, model})
+    });
+    const j = await r.json();
+    if(j.ok){
+      if(res) res.innerHTML = `<span class="pill g">✓ ${j.latency_ms}ms 响应正常 (${j.message || '200 OK'})</span>`;
+    } else {
+      if(res) res.innerHTML = `<span class="pill r">✗ ${j.message || '连通失败'}</span>`;
+    }
+  } catch(e) {
+    if(res) res.innerHTML = `<span class="pill r">✗ 请求异常: ${e.message || e}</span>`;
+  }
+}
+
+async function saveCustomProvider(){
+  const idInp = $("#mProvId");
+  const nameInp = $("#mProvName");
+  const upInp = $("#mProvUpstream");
+  const modInp = $("#mProvModels");
+  const keyInp = $("#mProvKey");
+
+  const id = idInp ? idInp.value.trim().toLowerCase() : "";
+  const name = nameInp ? nameInp.value.trim() : "";
+  const upstream = upInp ? upInp.value.trim() : "";
+  const rawModels = modInp ? modInp.value.trim() : "";
+  const key = keyInp ? keyInp.value.trim() : "";
+
+  if(!id || !/^[a-zA-Z0-9_\-]+$/.test(id)){
+    toast("供应商 ID 必须为英文字母、数字或连字符", true);
+    return;
+  }
+  if(!name){
+    toast("请输入展示名称", true);
+    return;
+  }
+  if(!upstream || !/^https?:\/\//i.test(upstream)){
+    toast("上游 Base URL 必须以 http:// 或 https:// 开头", true);
+    return;
+  }
+
+  const models = rawModels.split(/[,;\n\r]+/).map(s=>s.trim()).filter(Boolean);
+  if(!models.length) models.push(id);
+
+  try {
+    const r = await fetch("/dashboard/api/save-provider", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({id, name, upstream, models, key, active_model: models[0]})
+    });
+    const j = await r.json();
+    if(j.ok){
+      toast(`供应商 [${name}] 保存成功！`);
+      closeProviderModal();
+      selectedPid = id;
+      await loadProviders();
+    } else {
+      toast("保存失败: " + (j.error || "未知错误"), true);
+    }
+  } catch(e) {
+    toast("保存异常: " + (e.message || e), true);
+  }
+}
+
+async function deleteCurrentProvider(){
+  if(!pData || !pData.providers) return;
+  if(selectedPid === pData.active_provider){
+    alert(`无法删除当前正在激活的供应商 [${selectedPid}]！请先切换至其他供应商后再删除。`);
+    return;
+  }
+  const curP = pData.providers[selectedPid] || {};
+  if(!confirm(`确定要删除供应商 [${curP.name || selectedPid}] 吗？`)){
+    return;
+  }
+  try {
+    const r = await fetch("/dashboard/api/delete-provider", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({id: selectedPid})
+    });
+    const j = await r.json();
+    if(j.ok){
+      toast(`已删除供应商 [${curP.name || selectedPid}]`);
+      selectedPid = pData.active_provider;
+      await loadProviders();
+    } else {
+      toast("删除失败: " + (j.error || "未知错误"), true);
+    }
+  } catch(e) {
+    toast("删除异常: " + (e.message || e), true);
+  }
+}
+
 </script>
+
+<!-- 自定义供应商弹窗 -->
+<div id="providerModal" class="hidden" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)">
+  <div class="panel" style="width:480px;max-width:92%;background:#191820;border:1px solid var(--v1);box-shadow:0 8px 32px rgba(0,0,0,0.8);border-radius:12px;padding:22px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h3 id="modalTitle" style="margin:0;font-size:15px">添加自定义供应商</h3>
+      <span onclick="closeProviderModal()" style="cursor:pointer;color:var(--faint);font-size:20px;line-height:1">&times;</span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div>
+        <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:4px">供应商 ID (唯一英文标识，如 deepseek, ollama, groq)</label>
+        <input type="text" id="mProvId" placeholder="例如: deepseek" style="width:100%;height:32px;font-size:12px">
+      </div>
+      <div>
+        <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:4px">展示名称</label>
+        <input type="text" id="mProvName" placeholder="例如: DeepSeek 官方" style="width:100%;height:32px;font-size:12px">
+      </div>
+      <div>
+        <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:4px">上游 Base URL (API 根地址，无需包含 /v1/responses)</label>
+        <input type="text" id="mProvUpstream" placeholder="例如: https://api.deepseek.com" style="width:100%;height:32px;font-size:12px">
+      </div>
+      <div>
+        <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:4px">支持模型列表 (英文逗号分隔)</label>
+        <input type="text" id="mProvModels" placeholder="例如: deepseek-chat, deepseek-reasoner" style="width:100%;height:32px;font-size:12px">
+      </div>
+      <div>
+        <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:4px">API Key (选填，本地 Ollama 或无需鉴权可留空)</label>
+        <input type="text" id="mProvKey" placeholder="sk-..." style="width:100%;height:32px;font-size:12px;font-family:Consolas,monospace">
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:20px">
+      <button class="btn ghost" style="font-size:12px;padding:5px 12px" onclick="testModalPing()">⚡ 测试连通</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn ghost" style="font-size:12px;padding:5px 12px" onclick="closeProviderModal()">取消</button>
+        <button class="btn" style="font-size:12px;padding:5px 16px;background:var(--v1)" onclick="saveCustomProvider()">保存供应商</button>
+      </div>
+    </div>
+    <div id="modalPingResult" style="font-size:12px;margin-top:10px;min-height:18px"></div>
+  </div>
+</div>
+
 </body>
 </html>

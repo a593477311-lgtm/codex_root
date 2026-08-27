@@ -359,3 +359,106 @@ async def api_test_provider(request: Request):
     except Exception as e:
         lat = int((time.time() - t0) * 1000)
         return {"ok": False, "status": 0, "latency_ms": lat, "message": f"探测超时或失败: {str(e)[:80]}"}
+
+
+def ensure_models_in_catalog(models: list):
+    """确保自定义模型在 ~/.codex/models.json 中注册，便于 Codex 客户端识别与展示"""
+    codex_dir = r"C:\Users\gg1\.codex"
+    models_json = os.path.join(codex_dir, "models.json")
+    if not os.path.exists(models_json):
+        return
+    try:
+        with open(models_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        existing = {m.get("slug"): m for m in data.get("models", [])}
+        template = existing.get("MiniMax-M3") or (data.get("models")[0] if data.get("models") else None)
+        if not template:
+            return
+        updated = False
+        for m in models:
+            m_str = str(m).strip()
+            if m_str and m_str not in existing:
+                new_m = dict(template)
+                new_m["slug"] = m_str
+                new_m["display_name"] = m_str
+                new_m["description"] = f"Custom Model: {m_str}"
+                data["models"].append(new_m)
+                existing[m_str] = new_m
+                updated = True
+        if updated:
+            tmp_file = models_json + ".tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, models_json)
+    except Exception as e:
+        log.warning(f"Failed to update models.json: {e}")
+
+
+@router.post("/dashboard/api/save-provider")
+async def api_save_provider(request: Request):
+    data = await request.json()
+    p_id = data.get("id", "").strip().lower()
+    name = data.get("name", "").strip()
+    upstream = data.get("upstream", "").strip().rstrip("/")
+    raw_models = data.get("models", [])
+    key = data.get("key", "").strip()
+
+    if not p_id or not re.match(r"^[a-zA-Z0-9_\-]+$", p_id):
+        return JSONResponse({"ok": False, "error": "供应商 ID 必须由英文字母、数字、下划线或连字符组成"}, status_code=400)
+    if not name:
+        return JSONResponse({"ok": False, "error": "请输入供应商展示名称"}, status_code=400)
+    if not upstream or not upstream.startswith(("http://", "https://")):
+        return JSONResponse({"ok": False, "error": "上游 Base URL 必须以 http:// 或 https:// 开头"}, status_code=400)
+
+    if isinstance(raw_models, str):
+        models = [m.strip() for m in re.split(r"[,;\n\r]+", raw_models) if m.strip()]
+    elif isinstance(raw_models, list):
+        models = [str(m).strip() for m in raw_models if str(m).strip()]
+    else:
+        models = []
+
+    if not models:
+        models = [p_id]
+
+    cfg = load_config()
+    providers = cfg.get("providers", {})
+    existing = providers.get(p_id, {})
+
+    active_model = data.get("active_model") or existing.get("active_model", models[0])
+    if active_model not in models:
+        active_model = models[0]
+
+    providers[p_id] = {
+        "id": p_id,
+        "name": name,
+        "upstream": upstream,
+        "models": models,
+        "active_model": active_model,
+        "key": key if key else existing.get("key", ""),
+        "custom": True
+    }
+    cfg["providers"] = providers
+    save_config(cfg, backup=False)
+
+    # 自动将新增模型同步写入 models.json
+    ensure_models_in_catalog(models)
+
+    return {"ok": True, "provider": providers[p_id]}
+
+
+@router.post("/dashboard/api/delete-provider")
+async def api_delete_provider(request: Request):
+    data = await request.json()
+    p_id = data.get("id", "").strip()
+    cfg = load_config()
+    if p_id == cfg.get("active_provider"):
+        return JSONResponse({"ok": False, "error": f"无法删除当前正在生效的供应商 [{p_id}]，请先切换到其他供应商"}, status_code=400)
+
+    providers = cfg.get("providers", {})
+    if p_id not in providers:
+        return JSONResponse({"ok": False, "error": f"供应商不存在: {p_id}"}, status_code=404)
+
+    del providers[p_id]
+    cfg["providers"] = providers
+    save_config(cfg, backup=False)
+    return {"ok": True, "deleted": p_id}
