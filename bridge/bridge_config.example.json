@@ -1,0 +1,44 @@
+{
+  "upstream": "https://api.kimi.com/coding",
+  "host": "127.0.0.1",
+  "port": 15731,
+  "log_level": "INFO",
+  "bridge_tool_search": true,
+  "bridge_web_search": true,
+  "learn_namespaces": true,
+  "stats_enabled": true,
+  "stats_retention_days": 30,
+  "active_provider": "kimi",
+  "providers": {
+    "kimi": {
+      "id": "kimi",
+      "name": "Kimi For Coding",
+      "upstream": "https://api.kimi.com/coding",
+      "models": [
+        "k3"
+      ],
+      "active_model": "k3",
+      "key": "sk-kimi-your-api-key"
+    },
+    "gemini": {
+      "id": "gemini",
+      "name": "Gemini (Antigravity)",
+      "upstream": "http://127.0.0.1:8044",
+      "models": [
+        "gemini-3.7-flash-high"
+      ],
+      "active_model": "gemini-3.7-flash-high",
+      "key": "sk-your-gemini-key"
+    },
+    "minimax": {
+      "id": "minimax",
+      "name": "MiniMax 官方",
+      "upstream": "https://api.minimaxi.com",
+      "models": [
+        "MiniMax-M3"
+      ],
+      "active_model": "MiniMax-M3",
+      "key": "sk-your-minimax-key"
+    }
+  }
+}

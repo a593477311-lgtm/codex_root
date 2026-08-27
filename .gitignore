@@ -1,0 +1,52 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Runtime logs
+*.log
+*.log.*
+*.log[0-9]*
+logs/
+bridge/*.log
+bridge/*.log.*
+
+# SQLite & stats databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+bridge/bridge_stats.db
+
+# Temporary & backup files
+*.bak
+*.bak-*
+*.bak.*
+*.tmp
+*.tmp-*
+*.tmp.*
+.tmp/
+
+# Sensitive configuration & local credentials (CRITICAL: Do NOT commit secrets!)
+bridge_config.json
+bridge/bridge_config.json
+auth.json
+config.toml
+namespace_map.json
+bridge/namespace_map.json
+.env
+.env.*
+
+# Node / npm
+node_modules/
+npm-debug.log*
+
+# OS specific files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
