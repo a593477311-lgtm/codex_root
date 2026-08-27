@@ -182,7 +182,7 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
     <div style="font-size:12.5px;color:var(--sub)">挂载模型: <b id="pActiveModel" style="color:#2bc8e6">k3</b></div>
     <div style="font-size:12.5px;color:var(--sub)">Codex Key: <code id="pActiveKeyPart" style="color:#f5a623;background:#24232b;padding:2px 6px;border-radius:4px">sk-...</code></div>
     <div style="margin-left:auto;display:flex;gap:8px">
-      <button class="btn" style="padding:4px 14px;font-size:12px" onclick="testActivePing()">⚡ 实时测活</button>
+      <button class="btn" style="padding:4px 14px;font-size:12px" onclick="testActivePing()"><img src="/dashboard/assets/icon-flash.png" style="width:13px;height:13px;vertical-align:-2px;margin-right:4px">实时测活</button>
     </div>
   </div>
 
@@ -193,9 +193,9 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <span style="font-size:12px;color:var(--sub)">可选供应商</span>
         <div style="display:flex;gap:6px">
-          <button class="btn ghost" style="padding:2px 8px;font-size:11px" onclick="openEditProviderModal()">✏️ 编辑当前渠道</button>
-          <button class="btn ghost" style="padding:2px 8px;font-size:11px;color:#f85149" onclick="deleteCurrentProvider()">🗑️ 删除</button>
-          <button class="btn" style="padding:2px 10px;font-size:11px;background:var(--v1)" onclick="openAddProviderModal()">+ 添加自定义渠道</button>
+          <button class="btn ghost" style="padding:2px 8px;font-size:11px" onclick="openEditProviderModal()"><img src="/dashboard/assets/icon-edit.png" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px">编辑当前渠道</button>
+          <button class="btn ghost" style="padding:2px 8px;font-size:11px;color:#f85149" onclick="deleteCurrentProvider()"><img src="/dashboard/assets/icon-trash.png" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px">删除</button>
+          <button class="btn" style="padding:2px 10px;font-size:11px;background:var(--v1)" onclick="openAddProviderModal()"><img src="/dashboard/assets/icon-plus.png" style="width:12px;height:12px;vertical-align:-1px;margin-right:4px">添加自定义渠道</button>
         </div>
       </div>
       <div id="providerCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-bottom:14px">
@@ -231,7 +231,7 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
         </div>
       </div>
       <div class="savebar" style="margin-top:14px;padding-top:12px">
-        <button class="btn" onclick="saveActiveProvider()">💾 保存并切换为此供应商</button>
+        <button class="btn" onclick="saveActiveProvider()"><img src="/dashboard/assets/icon-save.png" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px">保存并切换为此供应商</button>
         <button class="btn ghost" onclick="loadProviders()">还原</button>
         <span id="pSaveNotice" style="font-size:12px;color:var(--sub);margin-left:8px"></span>
       </div>
@@ -320,12 +320,12 @@ async function testModalPing(){
     });
     const j = await r.json();
     if(j.ok){
-      if(res) res.innerHTML = `<span class="pill g">✓ ${j.latency_ms}ms 响应正常 (${j.message || '200 OK'})</span>`;
+      if(res) res.innerHTML = `<span class="pill g"><img src="/dashboard/assets/icon-check.png" style="width:10px;height:10px;vertical-align:-1px;margin-right:3px">${j.latency_ms}ms 响应正常 (${j.message || '200 OK'})</span>`;
     } else {
-      if(res) res.innerHTML = `<span class="pill r">✗ ${j.message || '连通失败'}</span>`;
+      if(res) res.innerHTML = `<span class="pill r"><img src="/dashboard/assets/icon-cross.png" style="width:10px;height:10px;vertical-align:-1px;margin-right:3px">${j.message || '连通失败'}</span>`;
     }
   } catch(e) {
-    if(res) res.innerHTML = `<span class="pill r">✗ 请求异常: ${e.message || e}</span>`;
+    if(res) res.innerHTML = `<span class="pill r"><img src="/dashboard/assets/icon-cross.png" style="width:10px;height:10px;vertical-align:-1px;margin-right:3px">请求异常: ${e.message || e}</span>`;
   }
 }
 
@@ -807,7 +807,7 @@ async function testActivePing(){
     });
     const j = await res.json();
     if(j.ok){
-      if(badge) badge.innerHTML = `<span class="pill g">✓ ${j.latency_ms}ms 响应正常</span>`;
+      if(badge) badge.innerHTML = `<span class="pill g"><img src="/dashboard/assets/icon-check.png" style="width:10px;height:10px;vertical-align:-1px;margin-right:3px">${j.latency_ms}ms 响应正常</span>`;
       const pPing = $("#pPingBadge");
       if(pPing) {
         pPing.className = "pill g";
@@ -815,7 +815,7 @@ async function testActivePing(){
       }
       toast("测活成功: " + j.message);
     } else {
-      if(badge) badge.innerHTML = `<span class="pill r">✗ ${j.latency_ms}ms ${j.status||"超时"}</span>`;
+      if(badge) badge.innerHTML = `<span class="pill r"><img src="/dashboard/assets/icon-cross.png" style="width:10px;height:10px;vertical-align:-1px;margin-right:3px">${j.latency_ms}ms ${j.status||"超时"}</span>`;
       const pPing = $("#pPingBadge");
       if(pPing) {
         pPing.className = "pill r";
@@ -824,7 +824,7 @@ async function testActivePing(){
       toast("测活失败: " + (j.message || j.error), true);
     }
   } catch(e) {
-    if(badge) badge.innerHTML = `<span class="pill r">✗ 异常</span>`;
+    if(badge) badge.innerHTML = `<span class="pill r"><img src="/dashboard/assets/icon-cross.png" style="width:10px;height:10px;vertical-align:-1px;margin-right:3px">异常</span>`;
     toast("网络错误: " + (e.message || e), true);
   }
 }
@@ -915,12 +915,12 @@ async function testModalPing(){
     });
     const j = await r.json();
     if(j.ok){
-      if(res) res.innerHTML = `<span class="pill g">✓ ${j.latency_ms}ms 响应正常 (${j.message || '200 OK'})</span>`;
+      if(res) res.innerHTML = `<span class="pill g"><img src="/dashboard/assets/icon-check.png" style="width:10px;height:10px;vertical-align:-1px;margin-right:3px">${j.latency_ms}ms 响应正常 (${j.message || '200 OK'})</span>`;
     } else {
-      if(res) res.innerHTML = `<span class="pill r">✗ ${j.message || '连通失败'}</span>`;
+      if(res) res.innerHTML = `<span class="pill r"><img src="/dashboard/assets/icon-cross.png" style="width:10px;height:10px;vertical-align:-1px;margin-right:3px">${j.message || '连通失败'}</span>`;
     }
   } catch(e) {
-    if(res) res.innerHTML = `<span class="pill r">✗ 请求异常: ${e.message || e}</span>`;
+    if(res) res.innerHTML = `<span class="pill r"><img src="/dashboard/assets/icon-cross.png" style="width:10px;height:10px;vertical-align:-1px;margin-right:3px">请求异常: ${e.message || e}</span>`;
   }
 }
 
@@ -1034,7 +1034,7 @@ async function deleteCurrentProvider(){
       </div>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:20px">
-      <button class="btn ghost" style="font-size:12px;padding:5px 12px" onclick="testModalPing()">⚡ 测试连通</button>
+      <button class="btn ghost" style="font-size:12px;padding:5px 12px" onclick="testModalPing()"><img src="/dashboard/assets/icon-flash.png" style="width:13px;height:13px;vertical-align:-2px;margin-right:4px">测试连通</button>
       <div style="display:flex;gap:8px">
         <button class="btn ghost" style="font-size:12px;padding:5px 12px" onclick="closeProviderModal()">取消</button>
         <button class="btn" style="font-size:12px;padding:5px 16px;background:var(--v1)" onclick="saveCustomProvider()">保存供应商</button>
