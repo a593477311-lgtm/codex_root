@@ -104,6 +104,16 @@ def asset(name: str):
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
+@router.get("/dashboard/preview", response_class=HTMLResponse)
+def page_preview():
+    target = os.path.join(os.path.dirname(__file__), "dashboard_v2.html")
+    try:
+        with open(target, encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        return HTMLResponse("<h1>dashboard_v2.html missing</h1>", status_code=404)
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 def page():
     try:

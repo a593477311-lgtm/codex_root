@@ -1,0 +1,1588 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Codex Bridge — AI Command Hub</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            bg: '#07080b',
+            card: 'rgba(18, 20, 28, 0.72)',
+            'card-hover': 'rgba(26, 29, 42, 0.85)',
+            sub: 'rgba(11, 13, 19, 0.8)',
+            border: 'rgba(255, 255, 255, 0.08)',
+            brand: '#6366f1',
+            cyan: '#06b6d4',
+            emerald: '#10b981',
+            rose: '#f43f5e',
+            amber: '#f59e0b',
+            purple: '#a855f7'
+          },
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'PingFang SC', 'sans-serif'],
+            mono: ['ui-monospace', 'JetBrains Mono', 'Consolas', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    body {
+      background-color: #07080b;
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 55%),
+        radial-gradient(at 100% 0%, rgba(6, 182, 212, 0.13) 0px, transparent 50%),
+        radial-gradient(at 50% 100%, rgba(168, 85, 247, 0.12) 0px, transparent 55%),
+        radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+      background-size: 100% 100%, 100% 100%, 100% 100%, 28px 28px;
+      background-position: 0 0, 0 0, 0 0, 0 0;
+      background-attachment: fixed;
+      color: #e4e4e7;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+      overflow-x: hidden;
+    }
+    .tabular {
+      font-variant-numeric: tabular-nums;
+    }
+    /* Translucent Glass & Spotlight Interactive Card */
+    .spotlight-card {
+      position: relative;
+      background: rgba(18, 20, 28, 0.72);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5), inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+      transition: border-color 200ms ease, transform 200ms ease, box-shadow 200ms ease;
+      overflow: hidden;
+    }
+    .spotlight-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(450px circle at var(--mouse-x, -500px) var(--mouse-y, -500px), rgba(99, 102, 241, 0.12), transparent 45%);
+      pointer-events: none;
+      border-radius: inherit;
+      opacity: 0;
+      transition: opacity 300ms ease;
+    }
+    .spotlight-card:hover::before {
+      opacity: 1;
+    }
+    .spotlight-card:hover {
+      border-color: rgba(255, 255, 255, 0.16);
+      box-shadow: 0 8px 30px -4px rgba(0, 0, 0, 0.6), inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+    }
+    /* Flowing Border Beam for Active Provider */
+    @keyframes border-shimmer {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    .active-beam-card {
+      position: relative;
+      background: linear-gradient(145deg, rgba(22, 25, 38, 0.85), rgba(13, 15, 24, 0.9)) padding-box,
+                  linear-gradient(90deg, #6366f1, #06b6d4, #a855f7, #6366f1) border-box;
+      background-size: 200% 200%;
+      animation: border-shimmer 6s ease infinite;
+      border: 1.5px solid transparent;
+      box-shadow: 0 0 30px rgba(99, 102, 241, 0.22), inset 0 1px 0 0 rgba(255, 255, 255, 0.12);
+    }
+    /* Radar Ping Live Pulse */
+    .radar-container {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+    }
+    .radar-core {
+      width: 6.5px;
+      height: 6.5px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 10px #10b981, 0 0 4px #10b981;
+    }
+    .radar-wave-1, .radar-wave-2 {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: 1.5px solid #10b981;
+      animation: radar-ping 2.2s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+    }
+    .radar-wave-2 {
+      animation-delay: 1.1s;
+    }
+    @keyframes radar-ping {
+      0% { transform: scale(0.4); opacity: 0.9; }
+      100% { transform: scale(2.4); opacity: 0; }
+    }
+    /* Aurora Gradient Action Button */
+    .btn-aurora {
+      background: linear-gradient(135deg, #6366f1 0%, #06b6d4 100%);
+      box-shadow: 0 0 16px rgba(99, 102, 241, 0.35);
+      transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .btn-aurora:hover {
+      box-shadow: 0 0 25px rgba(6, 182, 212, 0.55);
+      transform: translateY(-1px);
+    }
+    .btn-aurora:active {
+      transform: scale(0.98);
+    }
+    /* Input Boxes */
+    .input-box {
+      background: rgba(11, 13, 19, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      color: #f4f4f5;
+      outline: none;
+      transition: border-color 150ms ease, box-shadow 150ms ease;
+    }
+    .input-box:focus {
+      border-color: #6366f1;
+      box-shadow: 0 0 15px rgba(99, 102, 241, 0.25);
+    }
+    /* Request Flow Rows */
+    .req-row {
+      position: relative;
+      transition: all 150ms ease;
+    }
+    .req-row:hover {
+      background: rgba(255, 255, 255, 0.035);
+      transform: translateX(2px);
+    }
+    .req-row::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 15%; bottom: 15%;
+      width: 2px;
+      border-radius: 2px;
+      opacity: 0;
+      transition: opacity 150ms ease;
+    }
+    .req-row:hover::before {
+      opacity: 1;
+    }
+    .req-row.status-ok::before {
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+    }
+    .req-row.status-err::before {
+      background: #f43f5e;
+      box-shadow: 0 0 8px #f43f5e;
+    }
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(7, 8, 11, 0.5);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased selection:bg-brand selection:text-white">
+
+  <!-- ================= FLOATING COMMAND RIBBON (HUD) ================= -->
+  <header class="sticky top-3 z-40 w-full max-w-7xl mx-auto px-4 sm:px-6">
+    <div class="spotlight-card px-4 h-14 flex items-center justify-between gap-4 border border-white/10 bg-[#090b11]/85 backdrop-blur-xl shadow-2xl">
+      
+      <!-- Brand & Radar Status -->
+      <div class="flex items-center gap-3 shrink-0">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-brand/20 to-cyan/20 border border-brand/40 flex items-center justify-center text-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.25)]">
+            <i data-lucide="cpu" class="w-4 h-4"></i>
+          </div>
+          <span class="font-bold text-sm tracking-wider bg-clip-text text-transparent bg-gradient-to-r from-white via-zinc-100 to-cyan-200">CODEX COMMAND</span>
+          <span class="text-[9px] uppercase font-mono px-1.5 py-0.5 rounded bg-brand/15 text-brand border border-brand/30">v2.0 HUD</span>
+        </div>
+
+        <div class="h-4 w-px bg-white/10 mx-1 hidden sm:block"></div>
+
+        <!-- Radar Pulse Indicator -->
+        <div id="healthBadge" class="hidden sm:flex items-center gap-2.5 px-3 py-1 rounded-full bg-sub border border-white/10 text-xs text-zinc-300 shrink-0 shadow-inner">
+          <div class="radar-container">
+            <div class="radar-wave-1"></div>
+            <div class="radar-wave-2"></div>
+            <div class="radar-core"></div>
+          </div>
+          <span id="healthText" class="font-semibold text-[11px] tracking-wider text-emerald-400 font-mono">ONLINE</span>
+          <span id="healthLatency" class="text-[11px] font-mono text-zinc-400 tabular bg-white/5 px-1.5 py-0.2 rounded border border-white/5">--ms</span>
+        </div>
+      </div>
+
+      <!-- Navigation Segmented Tabs -->
+      <nav class="flex items-center p-1 rounded-xl bg-sub border border-white/[0.08] gap-1 shrink-0">
+        <button onclick="switchTab('overview')" id="tab-overview" class="tab-btn whitespace-nowrap shrink-0 px-3.5 py-1.5 text-xs font-medium rounded-lg flex items-center gap-1.5 text-white bg-gradient-to-r from-brand/80 to-cyan/80 shadow-[0_0_12px_rgba(99,102,241,0.35)] border border-white/15 transition-all">
+          <i data-lucide="activity" class="w-3.5 h-3.5"></i>
+          <span>监控概览</span>
+        </button>
+        <button onclick="switchTab('providers')" id="tab-providers" class="tab-btn whitespace-nowrap shrink-0 px-3.5 py-1.5 text-xs font-medium rounded-lg flex items-center gap-1.5 text-zinc-400 hover:text-zinc-200 transition-all">
+          <i data-lucide="server" class="w-3.5 h-3.5"></i>
+          <span>渠道中枢</span>
+        </button>
+        <button onclick="switchTab('events')" id="tab-events" class="tab-btn whitespace-nowrap shrink-0 px-3.5 py-1.5 text-xs font-medium rounded-lg flex items-center gap-1.5 text-zinc-400 hover:text-zinc-200 transition-all">
+          <i data-lucide="shield-alert" class="w-3.5 h-3.5"></i>
+          <span>安全与映射</span>
+        </button>
+        <button onclick="switchTab('settings')" id="tab-settings" class="tab-btn whitespace-nowrap shrink-0 px-3.5 py-1.5 text-xs font-medium rounded-lg flex items-center gap-1.5 text-zinc-400 hover:text-zinc-200 transition-all">
+          <i data-lucide="sliders" class="w-3.5 h-3.5"></i>
+          <span>参数与日志</span>
+        </button>
+      </nav>
+
+      <!-- Active Capsule & Aurora Ping Button -->
+      <div class="flex items-center gap-3 shrink-0">
+        <!-- Active Capsule -->
+        <div class="hidden xl:flex items-center gap-2 px-3 py-1 rounded-lg bg-sub border border-white/10 text-xs shrink-0">
+          <span class="text-zinc-500 text-[11px] font-mono">ACTIVE:</span>
+          <span id="ribbonProvName" class="font-semibold text-brand text-[11.5px] whitespace-nowrap">--</span>
+          <span class="text-zinc-600">/</span>
+          <span id="ribbonModelName" class="text-cyan-400 font-mono text-[11px] tabular whitespace-nowrap">--</span>
+        </div>
+
+        <!-- Aurora Gradient Test Ping -->
+        <button onclick="testActivePing()" id="btnGlobalPing" class="btn-aurora flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg text-white whitespace-nowrap">
+          <i data-lucide="zap" class="w-3.5 h-3.5 fill-white"></i>
+          <span id="globalPingText">测活</span>
+        </button>
+
+        <!-- Time Range Selector -->
+        <div class="flex items-center p-0.5 rounded-lg bg-sub border border-white/[0.08] text-[11px] font-mono shrink-0">
+          <button onclick="setTimeRange(1)" id="time-1" class="time-btn px-2 py-0.5 rounded text-zinc-400 hover:text-white transition">1D</button>
+          <button onclick="setTimeRange(7)" id="time-7" class="time-btn px-2 py-0.5 rounded bg-white/10 text-white font-medium shadow-inner transition">7D</button>
+          <button onclick="setTimeRange(30)" id="time-30" class="time-btn px-2 py-0.5 rounded text-zinc-400 hover:text-white transition">30D</button>
+        </div>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- ================= MAIN DASHBOARD CONTAINER ================= -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+
+    <!-- ================= TAB 1: OVERVIEW & METRICS ================= -->
+    <div id="view-overview" class="tab-view space-y-6">
+      
+      <!-- 4 Cinematic KPI Hero Cards -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        
+        <!-- Metric 1: Total Requests -->
+        <div class="spotlight-card p-5 flex flex-col justify-between">
+          <div class="flex items-center justify-between text-zinc-400">
+            <span class="text-xs font-semibold tracking-wider text-zinc-300 uppercase font-mono">Requests Volume</span>
+            <div class="w-7 h-7 rounded-lg bg-brand/10 border border-brand/20 flex items-center justify-center text-brand">
+              <i data-lucide="send" class="w-3.5 h-3.5"></i>
+            </div>
+          </div>
+          <div class="mt-4">
+            <div id="statTotalRequests" class="text-3xl font-extrabold font-mono tracking-tight text-transparent bg-clip-text bg-gradient-to-br from-white via-zinc-100 to-indigo-200 tabular">--</div>
+            <div class="mt-1.5 flex items-center gap-1.5 text-[11px] text-zinc-400 font-mono">
+              <span id="statErrorCount" class="text-rose-400 tabular">0 异常</span>
+              <span class="text-zinc-600">·</span>
+              <span id="statSuccessRate" class="text-emerald-400 tabular">100% 成功</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Metric 2: Tokens Breakdown -->
+        <div class="spotlight-card p-5 flex flex-col justify-between">
+          <div class="flex items-center justify-between text-zinc-400">
+            <span class="text-xs font-semibold tracking-wider text-zinc-300 uppercase font-mono">Total Tokens</span>
+            <div class="w-7 h-7 rounded-lg bg-cyan/10 border border-cyan/20 flex items-center justify-center text-cyan">
+              <i data-lucide="layers" class="w-3.5 h-3.5"></i>
+            </div>
+          </div>
+          <div class="mt-4">
+            <div id="statTotalTokens" class="text-3xl font-extrabold font-mono tracking-tight text-transparent bg-clip-text bg-gradient-to-br from-white via-zinc-100 to-cyan-200 tabular">--</div>
+            <div class="mt-1.5 flex items-center gap-2 text-[11px] text-zinc-400 font-mono">
+              <span>入: <span id="statInTokens" class="text-zinc-300 tabular font-semibold">0</span></span>
+              <span class="text-zinc-600">/</span>
+              <span>出: <span id="statOutTokens" class="text-zinc-300 tabular font-semibold">0</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Metric 3: Avg Latency -->
+        <div class="spotlight-card p-5 flex flex-col justify-between">
+          <div class="flex items-center justify-between text-zinc-400">
+            <span class="text-xs font-semibold tracking-wider text-zinc-300 uppercase font-mono">Avg Latency</span>
+            <div class="w-7 h-7 rounded-lg bg-purple/10 border border-purple/20 flex items-center justify-center text-purple">
+              <i data-lucide="gauge" class="w-3.5 h-3.5"></i>
+            </div>
+          </div>
+          <div class="mt-4">
+            <div class="flex items-baseline gap-1.5">
+              <span id="statAvgLatency" class="text-3xl font-extrabold font-mono tracking-tight text-transparent bg-clip-text bg-gradient-to-br from-white via-zinc-100 to-purple-200 tabular">--</span>
+              <span class="text-xs font-mono text-zinc-400 font-semibold">ms</span>
+            </div>
+            <div class="mt-1.5 text-[11px] text-zinc-400 font-mono">
+              <span>全链路双向往返耗时</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Metric 4: Cache Hit Rate -->
+        <div class="spotlight-card p-5 flex flex-col justify-between">
+          <div class="flex items-center justify-between text-zinc-400">
+            <span class="text-xs font-semibold tracking-wider text-zinc-300 uppercase font-mono">Cache Hit Efficiency</span>
+            <div class="w-7 h-7 rounded-lg bg-emerald/10 border border-emerald/20 flex items-center justify-center text-emerald">
+              <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+            </div>
+          </div>
+          <div class="mt-4">
+            <div id="statCacheHitRate" class="text-3xl font-extrabold font-mono tracking-tight text-transparent bg-clip-text bg-gradient-to-br from-emerald-300 to-cyan-300 tabular">--%</div>
+            <div class="mt-1.5 text-[11px] text-zinc-400 font-mono">
+              <span>省流: <span id="statCachedTokens" class="text-emerald-400 tabular font-semibold">0</span> tokens</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Chart & Model Breakdown Grid -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        
+        <!-- Left: Glowing Spline Curve Chart (2 cols) -->
+        <div class="spotlight-card p-6 lg:col-span-2 flex flex-col justify-between">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-cyan shadow-[0_0_8px_#06b6d4]"></span>
+                <h2 class="text-sm font-bold text-zinc-100 tracking-wide uppercase font-mono">Token Telemetry & Trends</h2>
+              </div>
+              <p class="text-xs text-zinc-400 mt-1 font-mono">历史输入、输出与上下文缓存动态衰减走势</p>
+            </div>
+            <div class="flex items-center gap-3 text-xs font-mono text-zinc-300">
+              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-brand shadow-[0_0_6px_#6366f1]"></span> 输入</span>
+              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-cyan shadow-[0_0_6px_#06b6d4]"></span> 输出</span>
+              <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-emerald shadow-[0_0_6px_#10b981]"></span> 缓存</span>
+            </div>
+          </div>
+          <div class="relative h-64 w-full">
+            <canvas id="overviewTrendChart"></canvas>
+          </div>
+        </div>
+
+        <!-- Right: Model Distribution (1 col) -->
+        <div class="spotlight-card p-6 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-brand shadow-[0_0_8px_#6366f1]"></span>
+              <h2 class="text-sm font-bold text-zinc-100 tracking-wide uppercase font-mono">Model Matrix Load</h2>
+            </div>
+            <p class="text-xs text-zinc-400 mt-1 font-mono">挂载模型吞吐占比分析</p>
+            
+            <div id="modelDistributionContainer" class="mt-5 space-y-3.5">
+              <div class="text-xs text-zinc-500 py-8 text-center font-mono">载入矩阵数据…</div>
+            </div>
+          </div>
+
+          <div class="pt-4 mt-4 border-t border-white/10 flex items-center justify-between text-xs text-zinc-400 font-mono">
+            <span>ACTIVE MODELS</span>
+            <span id="activeModelCount" class="font-mono text-cyan tabular font-bold text-sm">0</span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Recent Requests Flow Table -->
+      <div class="spotlight-card overflow-hidden">
+        <div class="p-4 border-b border-white/[0.08] flex items-center justify-between gap-4 bg-sub">
+          <div class="flex items-center gap-2.5">
+            <i data-lucide="terminal" class="w-4 h-4 text-cyan"></i>
+            <h2 class="text-xs font-bold text-zinc-200 tracking-wider uppercase font-mono">Inbound Stream Trace</h2>
+            <span class="text-xs text-zinc-500 font-mono">(Last 50 events)</span>
+          </div>
+          <button onclick="loadRequests()" class="btn-action flex items-center gap-1.5 px-3 py-1 text-xs rounded-lg bg-white/[0.04] border border-white/10 text-zinc-300 hover:text-white font-mono">
+            <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+            <span>SYNC</span>
+          </button>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs text-zinc-300">
+            <thead class="bg-sub/80 text-[11px] text-zinc-400 uppercase tracking-wider font-mono border-b border-white/5">
+              <tr>
+                <th class="px-5 py-3">Timestamp</th>
+                <th class="px-5 py-3">Model Target</th>
+                <th class="px-5 py-3">Status</th>
+                <th class="px-5 py-3 text-right">RTT</th>
+                <th class="px-5 py-3 text-right">Tokens In</th>
+                <th class="px-5 py-3 text-right">Tokens Out</th>
+                <th class="px-5 py-3 text-right">Cached</th>
+              </tr>
+            </thead>
+            <tbody id="requestsTableBody" class="divide-y divide-white/[0.03] font-mono text-[11.5px]">
+              <tr>
+                <td colspan="7" class="px-5 py-10 text-center text-zinc-500 font-mono">SYNCHRONIZING STREAM…</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ================= TAB 2: PROVIDER HUB ================= -->
+    <div id="view-providers" class="tab-view hidden space-y-6">
+      
+      <!-- Top Action Bar -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-white/[0.08]">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-cyan shadow-[0_0_8px_#06b6d4]"></span>
+            <h2 class="text-base font-bold text-zinc-100 tracking-wide font-mono uppercase">Provider & Model Hub</h2>
+          </div>
+          <p class="text-xs text-zinc-400 mt-0.5 font-mono">零感知热切，动态注入专属 API Key，写回本地原生模型字典</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="openAddProviderModal()" class="btn-aurora flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg text-white shadow-lg transition">
+            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+            <span>添加自定义供应商</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Providers Grid -->
+      <div id="providersGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <!-- Dynamically populated provider cards -->
+      </div>
+
+      <!-- Active Provider Detailed Inspector & Configuration Card -->
+      <div class="spotlight-card p-6 border-brand/30 relative">
+        <div class="flex items-center justify-between pb-4 mb-5 border-b border-white/[0.08]">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-brand/20 to-purple/20 border border-brand/40 flex items-center justify-center text-brand shadow-[0_0_15px_rgba(99,102,241,0.25)]">
+              <i data-lucide="cpu" class="w-4 h-4"></i>
+            </div>
+            <div>
+              <div class="flex items-center gap-2">
+                <h3 id="panelProvTitle" class="text-sm font-bold text-zinc-100 font-mono">渠道控制面板</h3>
+                <span id="panelActiveBadge" class="hidden text-[9px] font-mono uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold shadow-[0_0_8px_rgba(16,185,129,0.2)]">ACTIVE</span>
+              </div>
+              <p id="panelProvSub" class="text-xs text-zinc-400 font-mono mt-0.5">ID: --</p>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <button onclick="deleteActiveProvider()" id="btnDeleteProvider" class="hidden btn-action flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 font-mono">
+              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+              <span>删除此渠道</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Form fields -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+          
+          <!-- Field 1: Upstream Endpoint -->
+          <div class="space-y-1.5">
+            <label class="block text-xs font-semibold text-zinc-300 font-mono">UPSTREAM BASE URL</label>
+            <input type="text" id="panelUpstreamInput" class="input-box w-full px-3.5 py-2 text-xs font-mono text-zinc-200" placeholder="https://api.example.com">
+            <p class="text-[11px] text-zinc-500 font-mono">官方或本地代理根地址，无需包含 /v1/responses</p>
+          </div>
+
+          <!-- Field 2: Target Model -->
+          <div class="space-y-1.5">
+            <label class="block text-xs font-semibold text-zinc-300 font-mono">TARGET MODEL (SLUG)</label>
+            <select id="panelModelSelect" class="input-box w-full px-3.5 py-2 text-xs font-mono text-zinc-200 cursor-pointer">
+              <!-- populated dynamically -->
+            </select>
+            <p class="text-[11px] text-zinc-500 font-mono">切换渠道后将自动作为缺省对话模型</p>
+          </div>
+
+          <!-- Field 3: API Key -->
+          <div class="space-y-1.5 md:col-span-2">
+            <div class="flex items-center justify-between">
+              <label class="block text-xs font-semibold text-zinc-300 font-mono">CREDENTIAL KEY (BEARER)</label>
+              <div class="flex items-center gap-2">
+                <button type="button" onclick="toggleKeyVisibility()" class="text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-1 font-mono">
+                  <i data-lucide="eye" id="keyEyeIcon" class="w-3.5 h-3.5"></i>
+                  <span id="keyEyeText">SHOW</span>
+                </button>
+                <button type="button" onclick="copyActiveKey()" class="text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-1 ml-2 font-mono">
+                  <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                  <span>COPY</span>
+                </button>
+              </div>
+            </div>
+            <input type="password" id="panelKeyInput" class="input-box w-full px-3.5 py-2 text-xs font-mono text-zinc-200" placeholder="sk-...">
+            <p class="text-[11px] text-zinc-500 font-mono">出站请求将自动在此注入对应 API Key，脱耦客户端内存缓存</p>
+          </div>
+
+        </div>
+
+        <!-- Bottom Action Buttons & Test Output -->
+        <div class="mt-6 pt-4 border-t border-white/[0.08] flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div id="panelPingStatus" class="text-xs font-mono flex items-center gap-1.5 text-zinc-400">
+            <!-- Ping status feedback -->
+          </div>
+
+          <div class="flex items-center gap-3 w-full sm:w-auto justify-end">
+            <button onclick="testActivePing()" class="btn-action flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-white/[0.05] border border-white/10 text-zinc-200 hover:bg-white/[0.09] font-mono">
+              <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-400"></i>
+              <span>连通性测活</span>
+            </button>
+            <button onclick="saveAndSwitchActiveProvider()" class="btn-aurora flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg text-white shadow-lg transition active:scale-95 font-mono">
+              <i data-lucide="check" class="w-3.5 h-3.5"></i>
+              <span>保存并激活此供应商</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- ================= TAB 3: EVENTS & NAMESPACES ================= -->
+    <div id="view-events" class="tab-view hidden space-y-6">
+      
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        
+        <!-- Left: Security & Bridge Events -->
+        <div class="spotlight-card overflow-hidden flex flex-col">
+          <div class="p-4 border-b border-white/[0.08] flex items-center justify-between bg-sub">
+            <div class="flex items-center gap-2">
+              <i data-lucide="shield-check" class="w-4 h-4 text-cyan"></i>
+              <h2 class="text-xs font-bold text-zinc-200 uppercase font-mono tracking-wider">Protocol Interceptions</h2>
+            </div>
+            <button onclick="loadEvents()" class="btn-action text-xs text-zinc-400 hover:text-white p-1 rounded-lg">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+            </button>
+          </div>
+
+          <div class="p-4 flex-1 overflow-y-auto max-h-[500px]">
+            <div id="eventsList" class="space-y-3 font-mono text-xs">
+              <div class="text-center text-zinc-500 py-8 font-mono">载入事件流…</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Dynamic Namespaces Mapping -->
+        <div class="spotlight-card overflow-hidden flex flex-col">
+          <div class="p-4 border-b border-white/[0.08] flex items-center justify-between gap-4 bg-sub">
+            <div class="flex items-center gap-2">
+              <i data-lucide="network" class="w-4 h-4 text-purple"></i>
+              <h2 class="text-xs font-bold text-zinc-200 uppercase font-mono tracking-wider">Namespace Schema Map</h2>
+            </div>
+            <div class="relative w-44">
+              <input type="text" id="nsSearchInput" oninput="filterNamespaces()" placeholder="搜索映射..." class="input-box w-full px-3 py-1 text-xs font-mono">
+            </div>
+          </div>
+
+          <div class="p-4 flex-1 overflow-y-auto max-h-[500px]">
+            <table class="w-full text-left text-xs font-mono">
+              <thead class="text-[11px] text-zinc-400 uppercase border-b border-white/5">
+                <tr>
+                  <th class="pb-2">Function Slug</th>
+                  <th class="pb-2">Original Namespace</th>
+                  <th class="pb-2 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody id="nsTableBody" class="divide-y divide-white/[0.04]">
+                <tr>
+                  <td colspan="3" class="py-8 text-center text-zinc-500 font-mono">载入命名空间映射…</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="p-3.5 border-t border-white/10 bg-sub flex items-center justify-between text-xs text-zinc-400 font-mono">
+            <span>ACTIVE MAPPINGS</span>
+            <span id="nsTotalCount" class="font-mono text-cyan tabular font-bold">0</span>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- ================= TAB 4: SETTINGS & TERMINAL LOGS ================= -->
+    <div id="view-settings" class="tab-view hidden space-y-6">
+      
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        
+        <!-- Left: Configuration Form -->
+        <div class="spotlight-card p-6 space-y-5">
+          <div class="border-b border-white/[0.08] pb-3">
+            <h2 class="text-sm font-bold text-zinc-100 uppercase font-mono tracking-wide">Gateway Parameters</h2>
+            <p class="text-xs text-zinc-400 mt-0.5 font-mono">运行时修改将即时持久化到 bridge_config.json</p>
+          </div>
+
+          <div class="space-y-4 text-xs">
+            
+            <div class="flex items-center justify-between p-3.5 rounded-xl bg-sub border border-white/5">
+              <div>
+                <div class="font-semibold text-zinc-200 font-mono">BRIDGE TOOL_SEARCH</div>
+                <div class="text-zinc-500 text-[11px] font-mono">将孤儿 tool_search 转换为兼容的 function 工具</div>
+              </div>
+              <input type="checkbox" id="cfgBridgeToolSearch" class="accent-brand w-4 h-4 cursor-pointer">
+            </div>
+
+            <div class="flex items-center justify-between p-3.5 rounded-xl bg-sub border border-white/5">
+              <div>
+                <div class="font-semibold text-zinc-200 font-mono">BRIDGE WEB_SEARCH</div>
+                <div class="text-zinc-500 text-[11px] font-mono">将原生搜索调用改写为通用函数兼容模式</div>
+              </div>
+              <input type="checkbox" id="cfgBridgeWebSearch" class="accent-brand w-4 h-4 cursor-pointer">
+            </div>
+
+            <div class="flex items-center justify-between p-3.5 rounded-xl bg-sub border border-white/5">
+              <div>
+                <div class="font-semibold text-zinc-200 font-mono">LEARN NAMESPACES</div>
+                <div class="text-zinc-500 text-[11px] font-mono">双向流量动态提取 function -> namespace 映射持久化</div>
+              </div>
+              <input type="checkbox" id="cfgLearnNamespaces" class="accent-brand w-4 h-4 cursor-pointer">
+            </div>
+
+            <div class="flex items-center justify-between p-3.5 rounded-xl bg-sub border border-white/5">
+              <div>
+                <div class="font-semibold text-zinc-200 font-mono">TELEMETRY STATS</div>
+                <div class="text-zinc-500 text-[11px] font-mono">开启 SQLite 异步记录 Token 与调用延迟指标</div>
+              </div>
+              <input type="checkbox" id="cfgStatsEnabled" class="accent-brand w-4 h-4 cursor-pointer">
+            </div>
+
+            <div class="grid grid-cols-2 gap-4 pt-2">
+              <div class="space-y-1">
+                <label class="block text-zinc-300 font-semibold font-mono text-[11px]">RETENTION DAYS</label>
+                <input type="number" id="cfgStatsRetention" class="input-box w-full px-3 py-1.5 text-xs font-mono" min="1" max="365">
+              </div>
+              <div class="space-y-1">
+                <label class="block text-zinc-300 font-semibold font-mono text-[11px]">LOG LEVEL</label>
+                <select id="cfgLogLevel" class="input-box w-full px-3 py-1.5 text-xs font-mono">
+                  <option value="DEBUG">DEBUG</option>
+                  <option value="INFO">INFO</option>
+                  <option value="WARNING">WARNING</option>
+                  <option value="ERROR">ERROR</option>
+                </select>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="pt-4 border-t border-white/[0.08] flex justify-end">
+            <button onclick="saveBridgeConfig()" class="btn-aurora flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg text-white shadow-lg font-mono">
+              <i data-lucide="save" class="w-3.5 h-3.5"></i>
+              <span>SAVE CONFIG</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Right: Embedded Terminal Log Viewer -->
+        <div class="spotlight-card overflow-hidden flex flex-col bg-[#050608]/90">
+          <div class="p-3.5 border-b border-white/[0.08] flex items-center justify-between bg-sub">
+            <div class="flex items-center gap-2">
+              <div class="flex items-center gap-1.5">
+                <span class="w-2.5 h-2.5 rounded-full bg-rose-500/90 shadow-[0_0_6px_#f43f5e]"></span>
+                <span class="w-2.5 h-2.5 rounded-full bg-amber-500/90 shadow-[0_0_6px_#f59e0b]"></span>
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-500/90 shadow-[0_0_6px_#10b981]"></span>
+              </div>
+              <span class="text-xs font-mono text-zinc-400 ml-2 font-semibold">kimi_bridge.log — live stream</span>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <button onclick="clearTerminalView()" title="清屏" class="text-xs text-zinc-400 hover:text-white p-1 rounded">
+                <i data-lucide="trash" class="w-3.5 h-3.5"></i>
+              </button>
+              <button onclick="copyTerminalLogs()" title="复制全部" class="text-xs text-zinc-400 hover:text-white p-1 rounded">
+                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+              </button>
+              <button onclick="loadTerminalLogs()" title="刷新" class="text-xs text-zinc-400 hover:text-white p-1 rounded">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+          </div>
+
+          <div id="terminalLogArea" class="flex-1 p-4 overflow-y-auto max-h-[500px] font-mono text-[11px] leading-relaxed text-zinc-300 whitespace-pre-wrap select-text selection:bg-brand">
+            CONNECTING TERMINAL STREAM…
+          </div>
+
+          <div class="p-2.5 border-t border-white/5 bg-sub flex items-center justify-between text-[11px] text-zinc-500 font-mono">
+            <span>STREAM: ACTIVE</span>
+            <span>POLL: 3s</span>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- ================= MODAL: ADD/EDIT CUSTOM PROVIDER ================= -->
+  <div id="modalCustomProvider" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md hidden">
+    <div class="spotlight-card w-full max-w-md p-6 m-4 space-y-4 border-brand/40 shadow-2xl relative">
+      
+      <div class="flex items-center justify-between border-b border-white/[0.08] pb-3">
+        <h3 id="modalTitle" class="text-sm font-bold text-zinc-100 font-mono uppercase tracking-wide">添加自定义供应商</h3>
+        <button onclick="closeCustomProviderModal()" class="text-zinc-400 hover:text-white">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="space-y-3.5 text-xs">
+        <div class="space-y-1">
+          <label class="block text-zinc-300 font-semibold font-mono text-[11px]">PROVIDER ID (如 deepseek, ollama)</label>
+          <input type="text" id="modalProvId" class="input-box w-full px-3 py-1.5 text-xs font-mono" placeholder="deepseek">
+        </div>
+
+        <div class="space-y-1">
+          <label class="block text-zinc-300 font-semibold font-mono text-[11px]">DISPLAY NAME</label>
+          <input type="text" id="modalProvName" class="input-box w-full px-3 py-1.5 text-xs" placeholder="DeepSeek 官方">
+        </div>
+
+        <div class="space-y-1">
+          <label class="block text-zinc-300 font-semibold font-mono text-[11px]">UPSTREAM BASE URL</label>
+          <input type="text" id="modalProvUpstream" class="input-box w-full px-3 py-1.5 text-xs font-mono" placeholder="https://api.deepseek.com">
+        </div>
+
+        <div class="space-y-1">
+          <label class="block text-zinc-300 font-semibold font-mono text-[11px]">SUPPORTED MODELS (逗号隔开)</label>
+          <input type="text" id="modalProvModels" class="input-box w-full px-3 py-1.5 text-xs font-mono" placeholder="deepseek-chat, deepseek-reasoner">
+        </div>
+
+        <div class="space-y-1">
+          <label class="block text-zinc-300 font-semibold font-mono text-[11px]">CREDENTIAL KEY</label>
+          <input type="password" id="modalProvKey" class="input-box w-full px-3 py-1.5 text-xs font-mono" placeholder="sk-...">
+        </div>
+      </div>
+
+      <div class="pt-3 border-t border-white/[0.08] flex items-center justify-between">
+        <button onclick="testModalPing()" class="btn-action flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-white/[0.05] border border-white/10 text-zinc-200 hover:text-white font-mono">
+          <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-400"></i>
+          <span id="modalPingResult">测试连通</span>
+        </button>
+
+        <div class="flex items-center gap-2">
+          <button onclick="closeCustomProviderModal()" class="px-3 py-1.5 text-xs text-zinc-400 hover:text-white font-mono">CANCEL</button>
+          <button onclick="saveCustomProvider()" class="btn-aurora px-4 py-1.5 text-xs font-bold rounded-lg text-white shadow font-mono">SAVE</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ================= FLOATING TOAST NOTIFICATION ================= -->
+  <div id="toastNotification" class="fixed bottom-5 right-5 z-50 hidden transition-all duration-300 transform translate-y-2">
+    <div class="spotlight-card px-4 py-2.5 rounded-xl bg-[#12141c]/90 border border-brand/30 shadow-[0_0_20px_rgba(99,102,241,0.25)] flex items-center gap-3 text-xs text-zinc-200">
+      <span id="toastDot" class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]"></span>
+      <span id="toastMessage" class="font-mono font-medium">操作成功</span>
+    </div>
+  </div>
+
+  <!-- ================= CLIENT JAVASCRIPT ================= -->
+  <script>
+    let currentTimeRange = 7;
+    let providersData = null;
+    let selectedProviderId = "kimi";
+    let trendChartInstance = null;
+    let namespacesData = {};
+
+    // Spotlight Mouse Tracker
+    document.addEventListener('mousemove', (e) => {
+      document.querySelectorAll('.spotlight-card').forEach(card => {
+        const rect = card.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        card.style.setProperty('--mouse-x', `${x}px`);
+        card.style.setProperty('--mouse-y', `${y}px`);
+      });
+    });
+
+    function showToast(msg, isError = false) {
+      const toast = document.getElementById("toastNotification");
+      const dot = document.getElementById("toastDot");
+      const text = document.getElementById("toastMessage");
+      if (!toast) return;
+      text.textContent = msg;
+      dot.className = "w-2 h-2 rounded-full " + (isError ? "bg-rose-500 shadow-[0_0_8px_#f43f5e]" : "bg-emerald-500 shadow-[0_0_8px_#10b981]");
+      toast.classList.remove("hidden", "translate-y-2");
+      setTimeout(() => {
+        toast.classList.add("translate-y-2", "hidden");
+      }, 3500);
+    }
+
+    function switchTab(tabId) {
+      document.querySelectorAll(".tab-view").forEach(el => el.classList.add("hidden"));
+      const target = document.getElementById("view-" + tabId);
+      if (target) target.classList.remove("hidden");
+
+      document.querySelectorAll(".tab-btn").forEach(btn => {
+        btn.classList.remove("text-white", "bg-gradient-to-r", "from-brand/80", "to-cyan/80", "shadow-[0_0_12px_rgba(99,102,241,0.35)]", "border", "border-white/15");
+        btn.classList.add("text-zinc-400");
+      });
+      const activeBtn = document.getElementById("tab-" + tabId);
+      if (activeBtn) {
+        activeBtn.classList.remove("text-zinc-400");
+        activeBtn.classList.add("text-white", "bg-gradient-to-r", "from-brand/80", "to-cyan/80", "shadow-[0_0_12px_rgba(99,102,241,0.35)]", "border", "border-white/15");
+      }
+
+      if (window.lucide) lucide.createIcons();
+
+      if (tabId === "events") {
+        loadEvents();
+        loadNamespaces();
+      } else if (tabId === "settings") {
+        loadBridgeConfig();
+        loadTerminalLogs();
+      }
+    }
+
+    function setTimeRange(days) {
+      currentTimeRange = days;
+      [1, 7, 30].forEach(d => {
+        const btn = document.getElementById("time-" + d);
+        if (btn) {
+          if (d === days) {
+            btn.className = "time-btn px-2 py-0.5 rounded bg-white/10 text-white font-medium shadow-inner transition";
+          } else {
+            btn.className = "time-btn px-2 py-0.5 rounded text-zinc-400 hover:text-white transition";
+          }
+        }
+      });
+      loadOverviewMetrics();
+    }
+
+    // 1. Health Probe
+    async function loadHealth() {
+      try {
+        const res = await fetch("/dashboard/api/health");
+        const data = await res.json();
+        const text = document.getElementById("healthText");
+        const lat = document.getElementById("healthLatency");
+
+        if (data.upstream_ok) {
+          text.textContent = "ONLINE";
+          text.className = "font-semibold text-[11px] tracking-wider text-emerald-400 font-mono";
+        } else {
+          text.textContent = "DEGRADED";
+          text.className = "font-semibold text-[11px] tracking-wider text-rose-400 font-mono";
+        }
+        if (lat) lat.textContent = (data.upstream_ms != null ? data.upstream_ms : "--") + "ms";
+      } catch (e) {
+        console.warn("Health check error:", e);
+      }
+    }
+
+    // 2. Overview Metrics & Cinematic Chart
+    async function loadOverviewMetrics() {
+      try {
+        const sumRes = await fetch(`/dashboard/api/summary?days=${currentTimeRange}`);
+        const sum = await sumRes.json();
+        
+        const totalReq = sum.requests || 0;
+        const totalTok = sum.tokens_total || 0;
+        const inTok = sum.tokens_in || 0;
+        const outTok = sum.tokens_out || 0;
+        const cachedTok = sum.tokens_cached || 0;
+        const errCount = sum.errors || 0;
+        const avgLat = Math.round(sum.avg_latency_ms || 0);
+        const hitRate = ((sum.cache_hit_rate || 0) * 100).toFixed(1);
+
+        document.getElementById("statTotalRequests").textContent = Number(totalReq).toLocaleString();
+        document.getElementById("statTotalTokens").textContent = Number(totalTok).toLocaleString();
+        document.getElementById("statInTokens").textContent = Number(inTok).toLocaleString();
+        document.getElementById("statOutTokens").textContent = Number(outTok).toLocaleString();
+        document.getElementById("statAvgLatency").textContent = avgLat;
+        document.getElementById("statCacheHitRate").textContent = hitRate + "%";
+        document.getElementById("statCachedTokens").textContent = Number(cachedTok).toLocaleString();
+        document.getElementById("statErrorCount").textContent = `${errCount} 异常`;
+        
+        const succRate = totalReq ? (((totalReq - errCount) / totalReq) * 100).toFixed(1) : 100;
+        document.getElementById("statSuccessRate").textContent = `${succRate}% 成功`;
+
+        // Daily Trends Chart
+        const dailyRes = await fetch(`/dashboard/api/daily?days=${currentTimeRange}`);
+        const daily = await dailyRes.json();
+        renderTrendChart(daily || {});
+
+        // Models
+        const modRes = await fetch(`/dashboard/api/models?days=${currentTimeRange}`);
+        const models = await modRes.json();
+        renderModelDistribution(models || [], totalTok);
+
+        // Requests Table
+        loadRequests();
+      } catch (e) {
+        console.error("loadOverviewMetrics error:", e);
+      }
+    }
+
+    function renderTrendChart(dailyData) {
+      const canvas = document.getElementById("overviewTrendChart");
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+
+      const entries = Object.entries(dailyData || {}).sort((a, b) => a[0].localeCompare(b[0]));
+      const labels = entries.map(([d]) => d.slice(5));
+      const inTokens = entries.map(([, v]) => v.in || 0);
+      const outTokens = entries.map(([, v]) => v.out || 0);
+      const cacheTokens = entries.map(([, v]) => v.cached || 0);
+
+      // Decaying Glow Gradients
+      const gradIn = ctx.createLinearGradient(0, 0, 0, 240);
+      gradIn.addColorStop(0, 'rgba(99, 102, 241, 0.35)');
+      gradIn.addColorStop(1, 'rgba(99, 102, 241, 0.00)');
+
+      const gradOut = ctx.createLinearGradient(0, 0, 0, 240);
+      gradOut.addColorStop(0, 'rgba(6, 182, 212, 0.30)');
+      gradOut.addColorStop(1, 'rgba(6, 182, 212, 0.00)');
+
+      if (trendChartInstance) {
+        trendChartInstance.destroy();
+      }
+
+      trendChartInstance = new Chart(canvas, {
+        type: 'line',
+        data: {
+          labels: labels.length ? labels : ["今日"],
+          datasets: [
+            {
+              label: '输入 Token',
+              data: inTokens.length ? inTokens : [0],
+              borderColor: '#6366f1',
+              backgroundColor: gradIn,
+              borderWidth: 2.2,
+              tension: 0.4,
+              fill: true,
+              pointBackgroundColor: '#6366f1',
+              pointBorderColor: '#fff',
+              pointBorderWidth: 1.5,
+              pointRadius: 3.5,
+              pointHoverRadius: 6
+            },
+            {
+              label: '输出 Token',
+              data: outTokens.length ? outTokens : [0],
+              borderColor: '#06b6d4',
+              backgroundColor: gradOut,
+              borderWidth: 2,
+              tension: 0.4,
+              fill: true,
+              pointBackgroundColor: '#06b6d4',
+              pointBorderColor: '#fff',
+              pointBorderWidth: 1.5,
+              pointRadius: 3.5,
+              pointHoverRadius: 6
+            },
+            {
+              label: '缓存 Token',
+              data: cacheTokens.length ? cacheTokens : [0],
+              borderColor: '#10b981',
+              backgroundColor: 'transparent',
+              borderWidth: 1.8,
+              borderDash: [5, 5],
+              tension: 0.4,
+              pointRadius: 2.5,
+              pointHoverRadius: 5
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: 'rgba(18, 20, 28, 0.95)',
+              borderColor: 'rgba(99, 102, 241, 0.3)',
+              borderWidth: 1.5,
+              padding: 12,
+              cornerRadius: 8,
+              titleFont: { family: 'Inter', size: 11, weight: 'bold' },
+              bodyFont: { family: 'ui-monospace', size: 11 },
+              boxPadding: 4
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(255, 255, 255, 0.04)' },
+              ticks: { color: '#71717a', font: { family: 'ui-monospace', size: 10 } }
+            },
+            y: {
+              grid: { color: 'rgba(255, 255, 255, 0.04)' },
+              ticks: { 
+                color: '#71717a', 
+                font: { family: 'ui-monospace', size: 10 },
+                callback: v => v >= 1000000 ? (v/1000000).toFixed(1)+'M' : (v >= 1000 ? (v/1000).toFixed(0)+'k' : v)
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function renderModelDistribution(models, totalTokens) {
+      const container = document.getElementById("modelDistributionContainer");
+      const activeCount = document.getElementById("activeModelCount");
+      if (!container) return;
+
+      const validModels = (models || []).filter(m => m.model !== '?' && m.tokens_total > 0);
+      if (validModels.length === 0) {
+        container.innerHTML = `<div class="text-xs text-zinc-500 py-8 text-center font-mono">暂无有效模型调用数据</div>`;
+        if (activeCount) activeCount.textContent = "0";
+        return;
+      }
+
+      if (activeCount) activeCount.textContent = validModels.length + "";
+      const total = totalTokens || validModels.reduce((acc, cur) => acc + (cur.tokens_total || 0), 0) || 1;
+
+      container.innerHTML = validModels.map(m => {
+        const pct = Math.min(100, Math.max(1, Math.round(((m.tokens_total || 0) / total) * 100)));
+        return `
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between text-xs font-mono">
+              <span class="text-zinc-100 font-bold">${m.model}</span>
+              <span class="text-cyan-400 font-bold">${pct}% <span class="text-zinc-500 text-[10px]">(${Number(m.tokens_total || 0).toLocaleString()})</span></span>
+            </div>
+            <div class="w-full h-1.5 rounded-full bg-white/5 overflow-hidden">
+              <div class="h-full bg-gradient-to-r from-brand via-cyan to-purple rounded-full transition-all duration-700 shadow-[0_0_8px_rgba(6,182,212,0.4)]" style="width: ${pct}%"></div>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    async function loadRequests() {
+      const tbody = document.getElementById("requestsTableBody");
+      if (!tbody) return;
+      try {
+        const res = await fetch("/dashboard/api/requests?limit=50");
+        const list = await res.json();
+
+        if (!list || list.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="7" class="px-5 py-10 text-center text-zinc-500 font-mono">暂无请求记录</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = list.map(req => {
+          const isErr = (req.status >= 400);
+          const d = req.ts ? new Date(req.ts * 1000) : new Date();
+          const timeStr = d.toLocaleTimeString('zh-CN', { hour12: false });
+          const rowClass = isErr ? 'status-err' : 'status-ok';
+
+          return `
+            <tr class="req-row ${rowClass}">
+              <td class="px-5 py-3 text-zinc-400">${timeStr}</td>
+              <td class="px-5 py-3 text-zinc-100 font-semibold">${req.model || "unknown"}</td>
+              <td class="px-5 py-3">
+                <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold ${isErr ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30' : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'}">
+                  ${req.status || 200}
+                </span>
+              </td>
+              <td class="px-5 py-3 text-right tabular text-zinc-300 font-bold">${Math.round(req.latency_ms || 0)}ms</td>
+              <td class="px-5 py-3 text-right tabular text-zinc-400">${Number(req.in_tok || 0).toLocaleString()}</td>
+              <td class="px-5 py-3 text-right tabular text-zinc-400">${Number(req.out_tok || 0).toLocaleString()}</td>
+              <td class="px-5 py-3 text-right tabular text-emerald-400 font-semibold">${Number(req.cached_tok || 0).toLocaleString()}</td>
+            </tr>
+          `;
+        }).join("");
+      } catch (e) {
+        console.error("loadRequests error:", e);
+      }
+    }
+
+    // 3. Provider Hub Management
+    async function loadProviders() {
+      try {
+        const res = await fetch("/dashboard/api/providers");
+        providersData = await res.json();
+        if (!providersData) return;
+
+        selectedProviderId = providersData.active_provider || "kimi";
+        renderProvidersGrid();
+        renderProviderInspector();
+        updateRibbonCapsule();
+      } catch (e) {
+        showToast("加载供应商失败: " + (e.message || e), true);
+      }
+    }
+
+    function updateRibbonCapsule() {
+      if (!providersData) return;
+      const cur = (providersData.providers && providersData.providers[providersData.active_provider]) || {};
+      document.getElementById("ribbonProvName").textContent = cur.name || providersData.active_provider;
+      document.getElementById("ribbonModelName").textContent = providersData.current_model || "未挂载";
+    }
+
+    function renderProvidersGrid() {
+      const grid = document.getElementById("providersGrid");
+      if (!grid || !providersData) return;
+
+      const pList = providersData.providers || {};
+      grid.innerHTML = Object.keys(pList).map(id => {
+        const p = pList[id];
+        const isActive = (id === providersData.active_provider);
+        const isSelected = (id === selectedProviderId);
+        const isCustom = Boolean(p.custom);
+        const activeClass = isActive ? 'active-beam-card' : 'spotlight-card';
+        const selectRing = isSelected ? 'ring-2 ring-cyan/60' : '';
+
+        return `
+          <div onclick="selectProvider('${id}')" class="${activeClass} ${selectRing} p-5 cursor-pointer transition-all relative">
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="w-3.5 h-3.5 rounded-full ${isActive ? 'bg-emerald-500 shadow-[0_0_10px_#10b981]' : 'bg-zinc-600'}"></div>
+                <h4 class="text-sm font-bold text-zinc-100 font-mono">${p.name || id}</h4>
+                ${isCustom ? '<span class="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-purple/15 text-purple border border-purple/30 uppercase font-bold">Custom</span>' : ''}
+              </div>
+              ${isActive ? '<span class="text-[9.5px] font-mono font-bold text-emerald-400 bg-emerald-500/15 px-2 py-0.5 rounded-full border border-emerald-500/30 shadow-[0_0_8px_rgba(16,185,129,0.25)]">ACTIVE</span>' : ''}
+            </div>
+
+            <div class="mt-3 text-xs text-zinc-400 font-mono truncate">
+              ${p.upstream || "http://127.0.0.1"}
+            </div>
+
+            <div class="mt-4 pt-3 border-t border-white/10 flex items-center justify-between text-[11px] font-mono text-zinc-400">
+              <span>MODELS: ${(p.models || []).length}</span>
+              <span class="text-cyan truncate max-w-[140px] font-semibold">${(p.models && p.models[0]) || "--"}</span>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function selectProvider(id) {
+      selectedProviderId = id;
+      renderProvidersGrid();
+      renderProviderInspector();
+    }
+
+    function renderProviderInspector() {
+      if (!providersData || !providersData.providers) return;
+      const cur = providersData.providers[selectedProviderId] || {};
+      const isActive = (selectedProviderId === providersData.active_provider);
+
+      document.getElementById("panelProvTitle").textContent = cur.name || selectedProviderId;
+      document.getElementById("panelProvSub").textContent = `ID: ${selectedProviderId} ${cur.custom ? '(自定义供应商)' : '(内置官方适配)'}`;
+      
+      const actBadge = document.getElementById("panelActiveBadge");
+      if (actBadge) {
+        if (isActive) actBadge.classList.remove("hidden");
+        else actBadge.classList.add("hidden");
+      }
+
+      document.getElementById("panelUpstreamInput").value = cur.upstream || "";
+      document.getElementById("panelKeyInput").value = cur.key || (isActive ? (providersData.current_key || "") : "");
+
+      const mSel = document.getElementById("panelModelSelect");
+      const models = cur.models || ["k3"];
+      const activeModel = cur.active_model || (isActive ? providersData.current_model : models[0]) || models[0];
+      mSel.innerHTML = models.map(m => `<option value="${m}" ${m === activeModel ? 'selected' : ''}>${m}</option>`).join("");
+
+      const delBtn = document.getElementById("btnDeleteProvider");
+      if (delBtn) {
+        if (cur.custom && !isActive) {
+          delBtn.classList.remove("hidden");
+        } else {
+          delBtn.classList.add("hidden");
+        }
+      }
+
+      document.getElementById("panelPingStatus").innerHTML = "";
+    }
+
+    async function testActivePing() {
+      const cur = (providersData && providersData.providers) ? providersData.providers[selectedProviderId] : null;
+      const upstream = document.getElementById("panelUpstreamInput").value.trim() || (cur ? cur.upstream : "");
+      const key = document.getElementById("panelKeyInput").value.trim();
+      const model = document.getElementById("panelModelSelect").value;
+      const statusDiv = document.getElementById("panelPingStatus");
+      const globalBtn = document.getElementById("globalPingText");
+
+      if (statusDiv) statusDiv.innerHTML = `<span class="text-zinc-400 font-mono">PROBING UPSTREAM…</span>`;
+      if (globalBtn) globalBtn.textContent = "测活中…";
+
+      try {
+        const res = await fetch("/dashboard/api/test-provider", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ upstream, key, model })
+        });
+        const j = await res.json();
+        if (j.ok) {
+          if (statusDiv) statusDiv.innerHTML = `<span class="text-emerald-400 flex items-center gap-1 font-mono font-bold"><i data-lucide="check" class="w-3.5 h-3.5"></i> ${j.latency_ms}ms 响应正常 (${j.message || '200 OK'})</span>`;
+          showToast(`测活成功: ${j.latency_ms}ms (${j.message || 'OK'})`);
+        } else {
+          if (statusDiv) statusDiv.innerHTML = `<span class="text-rose-400 flex items-center gap-1 font-mono font-bold"><i data-lucide="alert-triangle" class="w-3.5 h-3.5"></i> ${j.message || '连通失败'} (${j.status || 'Error'})</span>`;
+          showToast(`测活异常: ${j.message || '失败'}`, true);
+        }
+      } catch (e) {
+        if (statusDiv) statusDiv.innerHTML = `<span class="text-rose-400 font-mono">请求异常: ${e.message || e}</span>`;
+        showToast("探测异常: " + (e.message || e), true);
+      } finally {
+        if (globalBtn) globalBtn.textContent = "测活";
+        if (window.lucide) lucide.createIcons();
+      }
+    }
+
+    async function saveAndSwitchActiveProvider() {
+      const key = document.getElementById("panelKeyInput").value.trim();
+      const model = document.getElementById("panelModelSelect").value;
+      const upstream = document.getElementById("panelUpstreamInput").value.trim();
+
+      try {
+        const res = await fetch("/dashboard/api/switch-provider", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            provider_id: selectedProviderId,
+            key,
+            model,
+            upstream
+          })
+        });
+        const j = await res.json();
+        if (j.ok) {
+          showToast(`已成功切换至 ${j.provider} (${j.model})！`);
+          await loadProviders();
+          loadHealth();
+        } else {
+          showToast("切换失败: " + (j.error || "未知错误"), true);
+        }
+      } catch (e) {
+        showToast("保存异常: " + (e.message || e), true);
+      }
+    }
+
+    async function deleteActiveProvider() {
+      if (!confirm(`确定删除自定义供应商 "${selectedProviderId}" 吗？`)) return;
+      try {
+        const res = await fetch("/dashboard/api/delete-provider", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: selectedProviderId })
+        });
+        const j = await res.json();
+        if (j.ok) {
+          showToast("已成功删除该渠道！");
+          selectedProviderId = "kimi";
+          await loadProviders();
+        } else {
+          showToast("删除失败: " + (j.error || "错误"), true);
+        }
+      } catch (e) {
+        showToast("删除异常: " + (e.message || e), true);
+      }
+    }
+
+    function openAddProviderModal() {
+      document.getElementById("modalProvId").value = "";
+      document.getElementById("modalProvName").value = "";
+      document.getElementById("modalProvUpstream").value = "";
+      document.getElementById("modalProvModels").value = "";
+      document.getElementById("modalProvKey").value = "";
+      document.getElementById("modalPingResult").textContent = "测试连通";
+      document.getElementById("modalCustomProvider").classList.remove("hidden");
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function closeCustomProviderModal() {
+      document.getElementById("modalCustomProvider").classList.add("hidden");
+    }
+
+    async function testModalPing() {
+      const upstream = document.getElementById("modalProvUpstream").value.trim();
+      const key = document.getElementById("modalProvKey").value.trim();
+      const modelsStr = document.getElementById("modalProvModels").value.trim();
+      const model = modelsStr.split(",")[0].trim();
+      const btn = document.getElementById("modalPingResult");
+
+      if (!upstream) {
+        showToast("请先填写上游 Base URL", true);
+        return;
+      }
+      btn.textContent = "探测中…";
+      try {
+        const res = await fetch("/dashboard/api/test-provider", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ upstream, key, model })
+        });
+        const j = await res.json();
+        if (j.ok) {
+          btn.textContent = `${j.latency_ms}ms 正常`;
+          showToast(`连通成功: ${j.latency_ms}ms`);
+        } else {
+          btn.textContent = "连通失败";
+          showToast(`连通失败: ${j.message || j.error}`, true);
+        }
+      } catch (e) {
+        btn.textContent = "异常";
+        showToast("测试异常: " + (e.message || e), true);
+      }
+    }
+
+    async function saveCustomProvider() {
+      const id = document.getElementById("modalProvId").value.trim().toLowerCase();
+      const name = document.getElementById("modalProvName").value.trim();
+      const upstream = document.getElementById("modalProvUpstream").value.trim();
+      const modelsStr = document.getElementById("modalProvModels").value.trim();
+      const key = document.getElementById("modalProvKey").value.trim();
+
+      if (!id || !name || !upstream) {
+        showToast("ID、名称与上游地址为必填项", true);
+        return;
+      }
+
+      const models = modelsStr ? modelsStr.split(",").map(s => s.trim()).filter(Boolean) : ["default"];
+
+      try {
+        const res = await fetch("/dashboard/api/save-provider", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, name, upstream, models, key })
+        });
+        const j = await res.json();
+        if (j.ok) {
+          showToast(`自定义供应商 "${name}" 已成功保存并注册！`);
+          closeCustomProviderModal();
+          selectedProviderId = id;
+          await loadProviders();
+        } else {
+          showToast("保存失败: " + (j.error || "未知错误"), true);
+        }
+      } catch (e) {
+        showToast("保存请求异常: " + (e.message || e), true);
+      }
+    }
+
+    function toggleKeyVisibility() {
+      const input = document.getElementById("panelKeyInput");
+      const text = document.getElementById("keyEyeText");
+      if (input.type === "password") {
+        input.type = "text";
+        text.textContent = "HIDE";
+      } else {
+        input.type = "password";
+        text.textContent = "SHOW";
+      }
+    }
+
+    function copyActiveKey() {
+      const input = document.getElementById("panelKeyInput");
+      if (!input.value) return;
+      navigator.clipboard.writeText(input.value);
+      showToast("已成功复制 API Key 至剪贴板");
+    }
+
+    // 4. Events & Namespaces
+    async function loadEvents() {
+      const container = document.getElementById("eventsList");
+      if (!container) return;
+      try {
+        const res = await fetch("/dashboard/api/events?limit=50");
+        const list = await res.json();
+
+        if (!list || list.length === 0) {
+          container.innerHTML = `<div class="text-center text-zinc-500 py-8 font-mono">暂无拦截与改写事件</div>`;
+          return;
+        }
+
+        container.innerHTML = list.map(ev => {
+          const d = ev.ts ? new Date(ev.ts * 1000) : new Date();
+          const time = d.toLocaleTimeString('zh-CN', { hour12: false });
+          return `
+            <div class="p-3 rounded-xl bg-sub border border-white/5 hover:border-brand/30 transition-all space-y-1">
+              <div class="flex items-center justify-between text-[11px]">
+                <span class="text-cyan font-bold">[${ev.kind || 'EVENT'}]</span>
+                <span class="text-zinc-500 tabular">${time}</span>
+              </div>
+              <div class="text-zinc-300 text-xs truncate">${ev.detail || ''}</div>
+            </div>
+          `;
+        }).join("");
+      } catch (e) {
+        console.error("loadEvents error:", e);
+      }
+    }
+
+    async function loadNamespaces() {
+      const tbody = document.getElementById("nsTableBody");
+      const totalSpan = document.getElementById("nsTotalCount");
+      if (!tbody) return;
+      try {
+        const res = await fetch("/dashboard/api/namespaces");
+        namespacesData = await res.json() || {};
+        renderNamespacesTable();
+      } catch (e) {
+        console.error("loadNamespaces error:", e);
+      }
+    }
+
+    function renderNamespacesTable() {
+      const tbody = document.getElementById("nsTableBody");
+      const totalSpan = document.getElementById("nsTotalCount");
+      const query = (document.getElementById("nsSearchInput")?.value || "").toLowerCase();
+
+      const entries = Object.entries(namespacesData).filter(([fnName, ns]) => {
+        return !query || fnName.toLowerCase().includes(query) || ns.toLowerCase().includes(query);
+      });
+
+      if (totalSpan) totalSpan.textContent = Object.keys(namespacesData).length + "";
+
+      if (entries.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="3" class="py-8 text-center text-zinc-500 font-mono">无匹配的命名空间映射</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = entries.map(([fnName, ns]) => {
+        return `
+          <tr class="hover:bg-white/[0.03] transition-colors">
+            <td class="py-2.5 text-zinc-200 font-semibold">${fnName}</td>
+            <td class="py-2.5 text-zinc-400">${ns}</td>
+            <td class="py-2.5 text-right">
+              <button onclick="deleteNamespace('${fnName.replace(/'/g, "\\'")}')" class="text-rose-400 hover:text-rose-300 text-[11px] font-mono font-semibold">DELETE</button>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function filterNamespaces() {
+      renderNamespacesTable();
+    }
+
+    async function deleteNamespace(name) {
+      if (!confirm(`确定删除映射 "${name}" 吗？`)) return;
+      try {
+        const res = await fetch(`/dashboard/api/namespaces/${encodeURIComponent(name)}`, { method: "DELETE" });
+        const j = await res.json();
+        if (j.ok) {
+          delete namespacesData[name];
+          renderNamespacesTable();
+          showToast(`已删除映射: ${name}`);
+        }
+      } catch (e) {
+        showToast("删除映射异常: " + (e.message || e), true);
+      }
+    }
+
+    // 5. Settings & Logs
+    async function loadBridgeConfig() {
+      try {
+        const res = await fetch("/dashboard/api/config");
+        const cfg = await res.json();
+
+        document.getElementById("cfgBridgeToolSearch").checked = Boolean(cfg.bridge_tool_search);
+        document.getElementById("cfgBridgeWebSearch").checked = Boolean(cfg.bridge_web_search);
+        document.getElementById("cfgLearnNamespaces").checked = Boolean(cfg.learn_namespaces);
+        document.getElementById("cfgStatsEnabled").checked = Boolean(cfg.stats_enabled);
+        document.getElementById("cfgStatsRetention").value = cfg.stats_retention_days || 30;
+        document.getElementById("cfgLogLevel").value = cfg.log_level || "INFO";
+      } catch (e) {
+        console.error("loadBridgeConfig error:", e);
+      }
+    }
+
+    async function saveBridgeConfig() {
+      const payload = {
+        bridge_tool_search: document.getElementById("cfgBridgeToolSearch").checked,
+        bridge_web_search: document.getElementById("cfgBridgeWebSearch").checked,
+        learn_namespaces: document.getElementById("cfgLearnNamespaces").checked,
+        stats_enabled: document.getElementById("cfgStatsEnabled").checked,
+        stats_retention_days: parseInt(document.getElementById("cfgStatsRetention").value, 10) || 30,
+        log_level: document.getElementById("cfgLogLevel").value
+      };
+
+      try {
+        const res = await fetch("/dashboard/api/config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const j = await res.json();
+        if (j.ok) {
+          showToast("服务运行参数保存成功！");
+        } else {
+          showToast("保存失败: " + (j.error || "未知错误"), true);
+        }
+      } catch (e) {
+        showToast("保存异常: " + (e.message || e), true);
+      }
+    }
+
+    async function loadTerminalLogs() {
+      const area = document.getElementById("terminalLogArea");
+      if (!area) return;
+      try {
+        const res = await fetch("/dashboard/api/log?lines=200");
+        const j = await res.json();
+        if (j && j.lines && j.lines.length) {
+          area.textContent = j.lines.join("\n");
+          area.scrollTop = area.scrollHeight;
+        } else {
+          area.textContent = "暂无运行日志输出。";
+        }
+      } catch (e) {
+        area.textContent = "获取日志异常: " + (e.message || e);
+      }
+    }
+
+    function clearTerminalView() {
+      const area = document.getElementById("terminalLogArea");
+      if (area) area.textContent = "";
+    }
+
+    function copyTerminalLogs() {
+      const area = document.getElementById("terminalLogArea");
+      if (!area || !area.textContent) return;
+      navigator.clipboard.writeText(area.textContent);
+      showToast("已成功复制终端日志！");
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      loadHealth();
+      loadOverviewMetrics();
+      loadProviders();
+
+      if (window.lucide) lucide.createIcons();
+
+      setInterval(loadHealth, 15000);
+      setInterval(() => {
+        const overview = document.getElementById("view-overview");
+        if (overview && !overview.classList.contains("hidden")) {
+          loadOverviewMetrics();
+        }
+      }, 10000);
+
+      setInterval(() => {
+        const settings = document.getElementById("view-settings");
+        if (settings && !settings.classList.contains("hidden")) {
+          loadTerminalLogs();
+        }
+      }, 3000);
+    });
+  </script>
+</body>
+</html>
