@@ -257,7 +257,7 @@ def api_log_tail(lines: int = 200):
 @router.get("/dashboard/api/providers")
 def api_get_providers():
     cfg = load_config()
-    codex_dir = r"C:\Users\gg1\.codex"
+    codex_dir = os.path.expanduser("~/.codex")
     auth_file = os.path.join(codex_dir, "auth.json")
     config_file = os.path.join(codex_dir, "config.toml")
     current_key = ""
@@ -318,7 +318,7 @@ async def api_switch_provider(request: Request):
     save_config(cfg, backup=False)
 
     # 2. Update auth.json
-    codex_dir = r"C:\Users\gg1\.codex"
+    codex_dir = os.path.expanduser("~/.codex")
     auth_file = os.path.join(codex_dir, "auth.json")
     active_key = p.get("key", "")
     if active_key:
@@ -390,7 +390,7 @@ async def api_test_provider(request: Request):
 
 def ensure_models_in_catalog(models: list):
     """确保自定义模型在 ~/.codex/models.json 中注册，便于 Codex 客户端识别与展示"""
-    codex_dir = r"C:\Users\gg1\.codex"
+    codex_dir = os.path.expanduser("~/.codex")
     models_json = os.path.join(codex_dir, "models.json")
     if not os.path.exists(models_json):
         return
