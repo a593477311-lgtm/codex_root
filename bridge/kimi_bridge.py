@@ -549,18 +549,57 @@ HOP_BY_HOP = {
 
 load_ns_map()
 
+_last_main_model = None
+
+def record_main_model(m: str):
+    global _last_main_model
+    if m and not any(k in str(m).lower() for k in ("luna", "terra")):
+        _last_main_model = str(m).strip()
+
+def get_current_main_model(cfg=None) -> str:
+    global _last_main_model
+    if _last_main_model:
+        return _last_main_model
+    try:
+        codex_dir = os.path.dirname(_HERE)
+        toml_path = os.path.join(codex_dir, "config.toml")
+        if os.path.exists(toml_path):
+            with open(toml_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("model ") or line.startswith("model="):
+                        parts = line.split("=", 1)
+                        if len(parts) == 2:
+                            val = parts[1].strip().strip('"').strip("'")
+                            if val and not any(k in str(val).lower() for k in ("luna", "terra")):
+                                _last_main_model = val
+                                return val
+    except Exception as e:
+        log.warning("Failed to read model from config.toml: %s", e)
+    if cfg:
+        active_pid = cfg.get("active_provider")
+        providers = cfg.get("providers", {})
+        if active_pid in providers:
+            act_m = providers[active_pid].get("active_model")
+            if act_m and not any(k in str(act_m).lower() for k in ("luna", "terra")):
+                _last_main_model = act_m
+                return act_m
+    return "GLM-5.3-Flash"
+
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy(path: str, request: Request):
     t0 = time.time()
     raw = await request.body()
     model = None
+    body_dict = None
     if request.method == "POST" and raw:
         try:
-            model = json.loads(raw).get("model")
+            body_dict = json.loads(raw)
+            if isinstance(body_dict, dict):
+                model = body_dict.get("model")
         except Exception:
             pass
-        raw = normalize_body(raw)
 
     current_upstream = UPSTREAM
     active_key = None
@@ -570,6 +609,30 @@ async def proxy(path: str, request: Request):
         cfg = dash.load_config() if dash else {}
         providers = cfg.get("providers", {})
         active_pid = cfg.get("active_provider")
+
+        # 智能模型别名机制 (Model Aliases):
+        # 当检测到 Codex 客户端发来 gpt-5.6-luna 等后台任务模型时，自动重写为当前主对话正在使用的 LLM 模型
+        if model and any(k in str(model).lower() for k in ("luna", "terra")):
+            target_model = get_current_main_model(cfg)
+            log.info("  alias: rewriting background model '%s' -> main model '%s'", model, target_model)
+            stats.note_event("model_alias", f"{model} -> {target_model}")
+            model = target_model
+            if isinstance(body_dict, dict):
+                body_dict["model"] = target_model
+                raw = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
+        elif model and not any(k in str(model).lower() for k in ("luna", "terra")):
+            record_main_model(model)
+
+        if request.method == "POST" and raw:
+            raw = normalize_body(raw)
+            if model and isinstance(body_dict, dict):
+                try:
+                    nb = json.loads(raw)
+                    if nb.get("model") != model:
+                        nb["model"] = model
+                        raw = json.dumps(nb, ensure_ascii=False).encode("utf-8")
+                except Exception:
+                    pass
 
         # 智能模型反向路由 (Model-Aware Smart Routing):
         # 若请求声明了具体 model，优先按模型归属自动匹配供应商
