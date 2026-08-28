@@ -5,6 +5,7 @@ file (dashboard.html) with zero external dependencies.
 """
 
 import datetime
+import copy
 import json
 import os
 import re
@@ -413,16 +414,19 @@ def ensure_models_in_catalog(models: list):
         for m in models:
             m_str = str(m).strip()
             if m_str and m_str not in existing:
-                new_m = dict(template)
+                new_m = copy.deepcopy(template)
                 new_m["slug"] = m_str
                 new_m["display_name"] = m_str
                 new_m["description"] = f"Custom Model: {m_str}"
-                new_m["supported_reasoning_levels"] = std_levels
+                new_m["supported_reasoning_levels"] = copy.deepcopy(std_levels)
                 new_m["default_reasoning_level"] = "medium"
                 new_m["support_verbosity"] = True
-                if "base_instructions" in new_m and isinstance(new_m["base_instructions"], str):
-                    old_name = template.get("slug", "k3")
-                    new_m["base_instructions"] = new_m["base_instructions"].replace(old_name, m_str)
+                old_name = template.get("slug", "k3")
+                if isinstance(new_m.get("base_instructions"), str):
+                    new_m["base_instructions"] = new_m["base_instructions"].replace(old_name, m_str).replace("GPT-5", m_str)
+                mm = new_m.get("model_messages")
+                if isinstance(mm, dict) and isinstance(mm.get("instructions_template"), str):
+                    mm["instructions_template"] = mm["instructions_template"].replace(old_name, m_str).replace("GPT-5", m_str)
                 data["models"].append(new_m)
                 existing[m_str] = new_m
                 updated = True
