@@ -194,6 +194,21 @@ def normalize_tool(t: dict) -> dict:
         log.info("  convert tool type '%s' -> function '%s' (native rewrite on response)", ty, name)
         stats.note_event("tool_convert", f"{ty} -> {name}")
         return {"type": "function", "name": name, "description": desc, "parameters": params}
+    if ty == "custom":
+        # freeform custom tool (e.g. apply_patch): give the model a single
+        # raw-text slot, and restore the native custom_tool_call on response.
+        special_names[name] = "custom_tool_call"
+        params = {
+            "type": "object",
+            "properties": {"input": {
+                "type": "string",
+                "description": "Raw payload for this freeform tool (for apply_patch: the full *** Begin Patch text)."}},
+            "required": ["input"],
+            "additionalProperties": False,
+        }
+        log.info("  convert tool type 'custom' -> function '%s' (freeform rewrite on response)", name)
+        stats.note_event("tool_convert", f"custom -> {name}")
+        return {"type": "function", "name": name, "description": desc, "parameters": params}
     desc = f"[bridged from '{ty}'] {desc}".strip()
     params = t.get("parameters")
     if not isinstance(params, dict) or not params:
@@ -408,6 +423,17 @@ def rewrite_output_item(item):
             args_obj = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
         except Exception:
             args_obj = {"input": raw_args}
+        if special_names[name] == "custom_tool_call":
+            text = args_obj.get("input") if isinstance(args_obj, dict) else None
+            if not text:
+                text = raw_args if isinstance(raw_args, str) else json.dumps(args_obj, ensure_ascii=False)
+            return {
+                "type": "custom_tool_call",
+                "id": item.get("id"),
+                "call_id": item.get("call_id"),
+                "name": name,
+                "input": text,
+            }, True
         return {
             "type": special_names[name],
             "id": item.get("id"),
