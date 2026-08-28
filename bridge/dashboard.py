@@ -398,9 +398,17 @@ def ensure_models_in_catalog(models: list):
         with open(models_json, "r", encoding="utf-8") as f:
             data = json.load(f)
         existing = {m.get("slug"): m for m in data.get("models", [])}
-        template = existing.get("MiniMax-M3") or (data.get("models")[0] if data.get("models") else None)
+        template = existing.get("k3") or existing.get("gemini-3.7-flash-high") or (data.get("models")[0] if data.get("models") else None)
         if not template:
             return
+
+        std_levels = [
+            {"description": "Fast responses with lighter reasoning", "effort": "low"},
+            {"description": "Balances speed and reasoning depth for everyday tasks", "effort": "medium"},
+            {"description": "Greater reasoning depth for complex problems", "effort": "high"},
+            {"description": "Extra high reasoning depth for complex problems", "effort": "xhigh"}
+        ]
+
         updated = False
         for m in models:
             m_str = str(m).strip()
@@ -409,8 +417,11 @@ def ensure_models_in_catalog(models: list):
                 new_m["slug"] = m_str
                 new_m["display_name"] = m_str
                 new_m["description"] = f"Custom Model: {m_str}"
+                new_m["supported_reasoning_levels"] = std_levels
+                new_m["default_reasoning_level"] = "medium"
+                new_m["support_verbosity"] = True
                 if "base_instructions" in new_m and isinstance(new_m["base_instructions"], str):
-                    old_name = template.get("slug", "MiniMax-M3")
+                    old_name = template.get("slug", "k3")
                     new_m["base_instructions"] = new_m["base_instructions"].replace(old_name, m_str)
                 data["models"].append(new_m)
                 existing[m_str] = new_m
