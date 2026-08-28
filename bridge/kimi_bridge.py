@@ -558,8 +558,9 @@ def record_main_model(m: str):
 
 def get_current_main_model(cfg=None) -> str:
     global _last_main_model
-    if _last_main_model:
-        return _last_main_model
+    # 1) config.toml 的 model 是权威来源（客户端当前默认模型），每次实时读取。
+    #    避免其他会话/子代理的直接请求污染"主模型"记忆（历史 bug：任何非 luna
+    #    请求都会覆盖 _last_main_model，导致后台 luna 任务被重写到错误模型）。
     try:
         codex_dir = os.path.dirname(_HERE)
         toml_path = os.path.join(codex_dir, "config.toml")
@@ -576,6 +577,10 @@ def get_current_main_model(cfg=None) -> str:
                                 return val
     except Exception as e:
         log.warning("Failed to read model from config.toml: %s", e)
+    # 2) 兜底（仅当 config.toml 缺失/无 model 时才会走到这里）：最近观察到的主模型
+    if _last_main_model:
+        return _last_main_model
+    # 3) 兜底：当前活跃供应商的默认模型
     if cfg:
         active_pid = cfg.get("active_provider")
         providers = cfg.get("providers", {})
@@ -622,6 +627,13 @@ async def proxy(path: str, request: Request):
                 raw = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
         elif model and not any(k in str(model).lower() for k in ("luna", "terra")):
             record_main_model(model)
+            try:
+                _toml_model = get_current_main_model(cfg)
+                if _toml_model and str(model) != _toml_model:
+                    log.info("  direct: client declared model '%s' (default is '%s')", model, _toml_model)
+                    stats.note_event("model_direct", f"{model} (default {_toml_model})")
+            except Exception:
+                pass
 
         if request.method == "POST" and raw:
             raw = normalize_body(raw)
