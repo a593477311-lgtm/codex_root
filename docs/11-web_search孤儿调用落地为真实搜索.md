@@ -27,11 +27,12 @@ k3 等走网关的会话里，模型调用 `web_search` 后永远拿不到结果
    （`query` 或 `input` 字段都认——不同模型落键习惯不同）；
 2. **空查询兜底**：客户端原生 web_search 无参数 schema，模型经常发出
    空 arguments（2026-08-28 实测连续 4 次空调用），此时回退取
-   **最近一条用户消息**作为查询词；
-3. 经由具备原生联网能力的供应商链执行（`SEARCH_CAPABLE = ("zhipu", "minimax")`，
-   2026-08-28 实测：kimi 上游 400/忽略，gemini 代理不通）：
-   以 `{"tools": [{"type": "web_search"}]}` 调上游 `/v1/responses`，
-   抽取 message 正文 + web_search_call 里的 sources 拼成结果文本；
+   **最近一条有实质内容的用户消息**作为查询词——跳过"继续/好"这类
+   推进指令，剥掉 app 的 environment_context 包装层
+   （取 `## My request:` 之后的正文）；
+3. 经由具备原生联网能力的供应商链执行
+   （`SEARCH_CAPABLE = ("zhipu", "kimi", "minimax")`，按各上游**原生形状**适配，
+   详见下节实测表）；
 4. 按 call_id 缓存最终结果（**失败也缓存为原 note**），避免同一个孤儿
    在每一轮请求里重复触发真实搜索拖慢会话；
 5. 替换 note 为真实结果后重新序列化请求体。无目标时字节级原样透传。
@@ -45,21 +46,25 @@ k3 等走网关的会话里，模型调用 `web_search` 后永远拿不到结果
 - 空 query 孤儿经用户消息兜底拿到真实结果 ✅
 - 无目标请求体字节级透传 ✅
 
-## 四通道实测（2026-08-29）与来源门控
+## 四通道实测（2026-08-29）与执行门控
 
-对四个供应商逐一以 `{"type": "web_search"}` 实测：
+对四个供应商逐一实测其**原生形状**：
 
-| 供应商 | 表现 | 结论 |
+| 供应商 | 原生搜索形状 | 实测结论 |
 | --- | --- | --- |
-| zhipu (GLM-5.3-Flash) | 返回 `web_search_call` + 真实来源链接 | ✅ 唯一真搜索通道 |
-| minimax (MiniMax-M3) | HTTP 200，但无任何 `web_search_call`，直接脑补答案（问"今天几号"答 5 月 26 日，错 3 个月） | ❌ 假搜索，比 note 更危险 |
-| kimi (k3) | 忽略工具，回"我无法联网搜索"（前一日还曾 400） | ❌ |
-| gemini (gemini-3.7-flash-high) | 代理路径无可用输出 | ❌ |
+| zhipu (GLM-5.3-Flash) | Responses `{"type": "web_search"}`，模型自愿真搜 | ✅ 稳定，带来源链接 |
+| kimi (k3 @ api.kimi.com/coding) | **Anthropic `/v1/messages` + `web_search_20250305` server tool**，单请求内完成搜索并作答 | ✅ 稳定，带来源链接 |
+| minimax (MiniMax-M3) | 同 zhipu 形状，但 M3 大概率无视工具（强制 `tool_choice` 也拦不住） | ⚠️ 8 次实测仅 2 次真搜，列为链尾兜底 |
+| gemini (3.7-flash-high @ 127.0.0.1:8044) | 本地代理 503 | ❌ |
 
-**来源门控**：`_native_search` 现在要求结果里存在带来源 URL 的
-`web_search_call` 才视为成功，否则 `return None` 顺延供应商链。
-没有来源的"搜索结果"与幻觉无法区分——此 guard 拦下了 MiniMax 的
-假搜索（此前 MiniMax 会话的孤儿搜索会优先命中它，拿到幻觉答案）。
+**关键教训**：
+- kimi 的 OpenAI 形状 `$web_search` builtin 也在（需两轮握手），但 Anthropic
+  server-tool 形状单请求即可完成，适配器选后者；
+- **MiniMax 失败时不报错而是现场编日期**——同问题三连测答出 5月18日/
+  5月5日/5月14日三个互异的错日期。门控因此看**执行证据**而非文本：
+  响应里必须真出现 `web_search_call`（kimi 侧为带来源的
+  `web_search_tool_result`）才算成功，否则顺延下一个供应商。
+  没有执行证据的"搜索结果"与幻觉无法区分。
 
 ## 运维注意
 

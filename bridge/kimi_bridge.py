@@ -414,11 +414,22 @@ def normalize_body(raw: bytes) -> bytes:
 # call is recorded but never executed, so repair_orphan_calls fills a note.
 # Here we upgrade those notes into REAL results by re-issuing the query against
 # a provider whose upstream natively executes {"type": "web_search"}.
-SEARCH_CAPABLE = ("zhipu", "minimax")   # probed 2026-08-28: kimi 400/ignored, gemini proxy dead
+SEARCH_CAPABLE = ("zhipu", "kimi", "minimax")
+# 2026-08-29 四通道实测:
+#   zhipu  Responses web_search 自愿真搜，带来源链接
+#   kimi   Anthropic /v1/messages + web_search_20250305 server tool 真搜，单请求完成，带来源
+#   minimax Responses web_search 必须 tool_choice=required 强制才真搜（无来源列表）；
+#           不强制时 M3 会无视工具直接脑补（问"今天几号"答错 3 个月）
+#   gemini 本地代理路径无输出，不支持
 _SEARCH_CACHE = {}                       # call_id -> final output text (results or note)
+
+# Responses 形状的按供应商额外载荷
+NATIVE_SEARCH_EXTRA = {"minimax": {"tool_choice": "required"}}
 
 
 async def _native_search(pid, pinfo, query):
+    if pid == "kimi":
+        return await _native_search_kimi(pinfo, query)
     up = (pinfo.get("upstream") or "").rstrip("/")
     key = pinfo.get("key")
     model = pinfo.get("active_model") or (pinfo.get("models") or [None])[0]
@@ -430,6 +441,7 @@ async def _native_search(pid, pinfo, query):
         "tools": [{"type": "web_search"}],
         "stream": False,
     }
+    payload.update(NATIVE_SEARCH_EXTRA.get(pid) or {})
     try:
         r = await client.post(f"{up}/v1/responses", json=payload,
                               headers={"Authorization": f"Bearer {key}"}, timeout=60)
@@ -438,27 +450,67 @@ async def _native_search(pid, pinfo, query):
             return None
         data = r.json()
         parts = []
-        found_sources = False
+        executed = False
         for it in data.get("output") or []:
             if it.get("type") == "web_search_call":
+                executed = True   # 上游真执行了搜索——与"无视工具脑补"区分的证据
                 act = it.get("action") or {}
                 srcs = [s.get("url") for s in (act.get("sources") or []) if isinstance(s, dict) and s.get("url")]
                 if srcs:
-                    found_sources = True
                     parts.append("来源: " + ", ".join(srcs[:8]))
             elif it.get("type") == "message":
                 for c in it.get("content") or []:
                     if isinstance(c, dict) and c.get("text"):
                         parts.append(c["text"])
-        if not found_sources:
-            # 上游没真执行搜索（如 MiniMax 忽略工具直接脑补答案），视同不支持，
-            # 交给供应商链的下一个；没有来源的"搜索结果"与幻觉无法区分。
-            log.warning("native search via %s: no web_search_call sources, treat as unsupported", pid)
+        if not executed:
+            # 没有 web_search_call 就是没有真搜，视同不支持，顺延供应商链
+            log.warning("native search via %s: no web_search_call executed, treat as unsupported", pid)
             return None
         text = "\n\n".join(parts).strip()
         return text[:6000] if text else None
     except Exception as e:
         log.warning("native search via %s failed: %s", pid, e)
+        return None
+
+
+async def _native_search_kimi(pinfo, query):
+    """Kimi For Coding 的原生搜索形状：Anthropic /v1/messages + web_search_20250305
+    server tool。单请求内完成：server_tool_use -> web_search_tool_result(带来源)
+    -> 最终答案文本。（OpenAI 形状的 $web_search builtin 也在，但需两轮握手，弃用。）"""
+    up = (pinfo.get("upstream") or "").rstrip("/")
+    key = pinfo.get("key")
+    model = pinfo.get("active_model") or (pinfo.get("models") or [None])[0]
+    if not (up and key and model and query):
+        return None
+    try:
+        r = await client.post(f"{up}/v1/messages", timeout=90, json={
+            "model": model,
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": f"请联网搜索并简要回答:{query}"}],
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+        }, headers={"Authorization": f"Bearer {key}",
+                    "anthropic-version": "2023-06-01", "content-type": "application/json"})
+        if r.status_code != 200:
+            log.warning("kimi native search: HTTP %s", r.status_code)
+            return None
+        srcs, texts = [], []
+        for blk in (r.json().get("content") or []):
+            t = blk.get("type")
+            if t == "web_search_tool_result":
+                for res in blk.get("content") or []:
+                    if isinstance(res, dict) and res.get("url") and res["url"] not in srcs:
+                        srcs.append(res["url"])
+            elif t == "text":
+                txt = (blk.get("text") or "").strip()
+                if txt and not txt.startswith("Search results for query:"):
+                    texts.append(txt)
+        if not srcs:
+            log.warning("kimi native search: no web_search_tool_result, treat as unsupported")
+            return None
+        text = "\n\n".join(["来源: " + ", ".join(srcs[:8])] + texts).strip()
+        return text[:6000] if text else None
+    except Exception as e:
+        log.warning("kimi native search failed: %s", e)
         return None
 
 
@@ -489,18 +541,34 @@ async def fulfill_web_searches(raw: bytes, chosen_pid, providers) -> bytes:
     if not targets:
         return raw
     # 客户端原生 web_search 无参数 schema，模型常发出空 arguments；
-    # 兜底用最近一条用户消息作为查询词
+    # 兜底取最近一条"有实质内容"的用户消息作为查询词：
+    # "继续"/"好" 这类推进指令没有搜索价值要跳过；app 包装层
+    # （environment_context 等）也要剥掉，只留 "## My request:" 之后的正文。
+    _TRIVIAL = {"继续", "继续任务", "把任务做完", "好", "好的", "嗯", "嗯嗯", "行", "可以",
+                "做吧", "执行", "收了", "ok", "okay", "go", "continue", "？", "?"}
     fallback_q = ""
+    last_any = ""
     for it in reversed(items):
-        if isinstance(it, dict) and it.get("type") == "message" and it.get("role") == "user":
-            c = it.get("content")
-            if isinstance(c, str):
-                fallback_q = c
-            elif isinstance(c, list):
-                fallback_q = " ".join(x.get("text", "") for x in c if isinstance(x, dict))
-            if fallback_q.strip():
-                break
-    fallback_q = fallback_q.strip()[:300]
+        if not (isinstance(it, dict) and it.get("type") == "message" and it.get("role") == "user"):
+            continue
+        c = it.get("content")
+        if isinstance(c, str):
+            cand = c
+        elif isinstance(c, list):
+            cand = " ".join(x.get("text", "") for x in c if isinstance(x, dict))
+        else:
+            continue
+        cand = cand.strip()
+        if "## My request:" in cand:
+            cand = cand.split("## My request:", 1)[1].strip()
+        if not cand or cand.startswith("<"):
+            continue
+        if not last_any:
+            last_any = cand
+        if len(cand) >= 6 and cand.lower() not in _TRIVIAL:
+            fallback_q = cand
+            break
+    fallback_q = (fallback_q or last_any).strip()[:300]
     chain = []
     for pid in (chosen_pid, *SEARCH_CAPABLE):
         if pid in SEARCH_CAPABLE and pid in providers and pid not in chain:
