@@ -514,41 +514,24 @@ async def _native_search_kimi(pinfo, query):
         return None
 
 
-async def fulfill_web_searches(raw: bytes, chosen_pid, providers) -> bytes:
-    """Replace orphan web_search notes in the outgoing body with real results."""
+def _extract_call_query(arguments) -> str:
+    """从 web_search function_call 的 arguments 里取查询词（query 或 input 键）。"""
     try:
-        body = json.loads(raw)
+        a = json.loads(arguments) if isinstance(arguments, str) else (arguments or {})
     except Exception:
-        return raw
-    items = body.get("input")
-    if not isinstance(items, list):
-        return raw
-    note = ORPHAN_NOTES.get("web_search")
-    calls = {}
-    targets = []
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        if it.get("type") == "function_call" and it.get("name") == "web_search":
-            try:
-                _a = json.loads(it.get("arguments") or "{}")
-                q = _a.get("query") or _a.get("input") or ""
-            except Exception:
-                q = None
-            calls[it.get("call_id")] = str(q or "")
-        elif it.get("type") == "function_call_output" and it.get("output") == note and it.get("call_id") in calls:
-            targets.append((it.get("call_id"), calls[it["call_id"]], it))
-    if not targets:
-        return raw
-    # 客户端原生 web_search 无参数 schema，模型常发出空 arguments；
-    # 兜底取最近一条"有实质内容"的用户消息作为查询词：
-    # "继续"/"好" 这类推进指令没有搜索价值要跳过；app 包装层
-    # （environment_context 等）也要剥掉，只留 "## My request:" 之后的正文。
+        return ""
+    if not isinstance(a, dict):
+        return ""
+    return str(a.get("query") or a.get("input") or "")
+
+
+def _fallback_query(items) -> str:
+    """空查询兜底：取最近一条有实质内容的用户消息——跳过"继续/好"这类
+    推进指令；剥掉 app 的 environment_context 包装，只留 ## My request: 正文。"""
     _TRIVIAL = {"继续", "继续任务", "把任务做完", "好", "好的", "嗯", "嗯嗯", "行", "可以",
                 "做吧", "执行", "收了", "ok", "okay", "go", "continue", "？", "?"}
-    fallback_q = ""
     last_any = ""
-    for it in reversed(items):
+    for it in reversed(items or []):
         if not (isinstance(it, dict) and it.get("type") == "message" and it.get("role") == "user"):
             continue
         c = it.get("content")
@@ -566,26 +549,58 @@ async def fulfill_web_searches(raw: bytes, chosen_pid, providers) -> bytes:
         if not last_any:
             last_any = cand
         if len(cand) >= 6 and cand.lower() not in _TRIVIAL:
-            fallback_q = cand
-            break
-    fallback_q = (fallback_q or last_any).strip()[:300]
+            return cand[:300]
+    return (last_any or "").strip()[:300]
+
+
+async def _execute_search(query, items, chosen_pid, providers):
+    """按供应商链执行一次真实搜索；全链失败返回诚实的孤儿 note。"""
+    note = ORPHAN_NOTES["web_search"]
+    q = (query or "").strip()
+    if not q:
+        q = _fallback_query(items)
+        if q:
+            log.info("  web_search: empty query, fallback to last user msg (%r)", q[:60])
+    if not q:
+        return note
     chain = []
     for pid in (chosen_pid, *SEARCH_CAPABLE):
         if pid in SEARCH_CAPABLE and pid in providers and pid not in chain:
             chain.append(pid)
+    for pid in chain:
+        text = await _native_search(pid, providers[pid], q)
+        if text:
+            log.info("  web_search executed via provider '%s' (q=%s)", pid, q[:40])
+            stats.note_event("web_search", f"{pid}: {q[:60]}")
+            return text
+    return note
+
+
+async def fulfill_web_searches(raw: bytes, chosen_pid, providers) -> bytes:
+    """Replace orphan web_search notes in the outgoing body with real results."""
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return raw
+    items = body.get("input")
+    if not isinstance(items, list):
+        return raw
+    note = ORPHAN_NOTES.get("web_search")
+    calls = {}
+    targets = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if it.get("type") == "function_call" and it.get("name") == "web_search":
+            calls[it.get("call_id")] = _extract_call_query(it.get("arguments"))
+        elif it.get("type") == "function_call_output" and it.get("output") == note and it.get("call_id") in calls:
+            targets.append((it.get("call_id"), calls[it["call_id"]], it))
+    if not targets:
+        return raw
     for cid, query, out_item in targets:
         if cid not in _SEARCH_CACHE:
-            text = None
-            if not query:
-                query = fallback_q
-                log.info("  web_search orphan %s: empty query, fallback to last user msg (%r)", cid, query[:60])
-            for pid in chain if query else []:
-                text = await _native_search(pid, providers[pid], query)
-                if text:
-                    log.info("  web_search executed via provider '%s' (call_id=%s, q=%s)", pid, cid, query[:40])
-                    stats.note_event("web_search", f"{pid}: {query[:60]}")
-                    break
-            _SEARCH_CACHE[cid] = text or note   # 失败也缓存，避免每轮重试拖慢会话
+            # 失败也缓存为 note，避免每轮重试拖慢会话
+            _SEARCH_CACHE[cid] = await _execute_search(query, items, chosen_pid, providers)
         if _SEARCH_CACHE[cid] != note:
             out_item["output"] = _SEARCH_CACHE[cid]
     return json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -650,6 +665,8 @@ class SseRewriter:
         self.seen_seq = False
         self.usage = None
         self.model = None
+        self.oi_offset = 0        # 搜索续轮：本轮 output_index 需要的前移量
+        self.drop_lifecycle = False  # 搜索续轮：丢弃 response.created/in_progress
 
     def _stamp(self, data):
         if isinstance(data, dict) and ("sequence_number" in data or self.seen_seq):
@@ -689,6 +706,11 @@ class SseRewriter:
 
     def process(self, ev, data):
         t = data.get("type")
+        if self.drop_lifecycle and t in ("response.created", "response.in_progress"):
+            return []
+        if self.oi_offset and isinstance(data, dict) and isinstance(data.get("output_index"), int):
+            data = dict(data)
+            data["output_index"] = data["output_index"] + self.oi_offset
         if t == "response.output_item.added":
             item = data.get("item") or {}
             if item.get("type") == "function_call":
@@ -734,6 +756,42 @@ class SseRewriter:
 
 
 # --- proxy --------------------------------------------------------------------
+
+
+# --- search continuation：服务端语义的 web_search 续轮 -------------------------
+# 上游响应若以 web_search 调用结尾，桥自己执行搜索、把"带结果的追问"流式拼进
+# 同一条客户端响应——对齐官方 Codex 的服务端工具语义，轮次不再"断"在搜索上。
+SEARCH_CONT_MAX = 3  # 单次请求最多连续搜索轮数（防模型反复搜索打转）
+
+
+def _parse_sse_block(lines):
+    ev = None
+    data_lines = []
+    for ln in lines:
+        if ln.startswith("event:"):
+            ev = ln[6:].strip()
+        elif ln.startswith("data:"):
+            data_lines.append(ln[5:].lstrip())
+    raw = "\n".join(data_lines).strip()
+    if not raw or raw == "[DONE]":
+        return None
+    try:
+        return ev, json.loads(raw)
+    except Exception:
+        return None
+
+
+def _merge_usage(acc, u):
+    if not isinstance(u, dict):
+        return
+    for k, v in u.items():
+        if isinstance(v, (int, float)):
+            acc[k] = acc.get(k, 0) + v
+        elif isinstance(v, dict):
+            sub = acc.setdefault(k, {})
+            for sk, sv in v.items():
+                if isinstance(sv, (int, float)):
+                    sub[sk] = sub.get(sk, 0) + sv
 
 
 app = FastAPI()
@@ -915,32 +973,115 @@ async def proxy(path: str, request: Request):
     out_headers = {k: v for k, v in resp.headers.items() if k.lower() == "content-type"}
 
     if "text/event-stream" in resp.headers.get("content-type", ""):
-        rewriter = SseRewriter()
+        # 请求体留底：搜索续轮要用它构造 follow-up 请求
+        body_obj = None
+        if request.method == "POST" and raw:
+            try:
+                body_obj = json.loads(raw)
+            except Exception:
+                body_obj = None
 
         async def gen():
-            block = []
             err = None
+            rewriter = SseRewriter()
+            cur_resp = resp
+            cont_items = []      # 续轮累积（上游格式）：各轮 output 与搜索结果按序交替
+            merged_outputs = []  # 续轮累积（客户端格式）：各轮 rewrite 后的 output
+            resp_id = None
+            completed_data = None
+            usage_raw = {}
+            stats_usage = {}
+            model_seen = None
+            last_raw_out = []
+            rounds = 0
+
+            async def _lines(stream):
+                async for line in stream.aiter_lines():
+                    yield line
+                yield ""  # 哨兵：冲刷无空行结尾的尾部块
+
             try:
-                resp.encoding = "utf-8"
-                async for line in resp.aiter_lines():
-                    if line == "":
-                        if block:
+                while True:
+                    block = []
+                    cur_resp.encoding = "utf-8"
+                    async for line in _lines(cur_resp):
+                        if line != "":
+                            block.append(line)
+                            continue
+                        if not block:
+                            continue
+                        parsed = _parse_sse_block(block)
+                        if parsed and isinstance(parsed[1], dict) and parsed[1].get("type") == "response.completed":
+                            # 扣下 completed：可能要续轮，最终统一发合并版
+                            r = parsed[1].get("response") or {}
+                            resp_id = resp_id or r.get("id")
+                            if r.get("model"):
+                                model_seen = r["model"]
+                            last_raw_out = r.get("output") or []
+                            cont_items.extend(last_raw_out)
+                            merged_outputs.append([rewrite_output_item(it)[0] for it in last_raw_out])
+                            _merge_usage(usage_raw, r.get("usage"))
+                            _merge_usage(stats_usage, extract_usage(r))
+                            completed_data = parsed[1]
+                        else:
                             for c in rewriter.handle_block(block):
                                 yield c
-                            block = []
-                    else:
-                        block.append(line)
-                if block:
-                    for c in rewriter.handle_block(block):
-                        yield c
+                        block = []
+                    await cur_resp.aclose()
+
+                    # —— 搜索续轮判定：本轮 output 里的工具调用全是 web_search 才续 ——
+                    pending_ws = [it for it in last_raw_out
+                                  if isinstance(it, dict) and it.get("type") == "function_call"]
+                    if not (pending_ws and all(it.get("name") == "web_search" for it in pending_ws)
+                            and body_obj and chosen_pid and rounds < SEARCH_CONT_MAX):
+                        break
+                    rounds += 1
+                    for it in pending_ws:
+                        res = await _execute_search(_extract_call_query(it.get("arguments")),
+                                                    (body_obj.get("input") or []) + cont_items,
+                                                    chosen_pid, providers)
+                        cont_items.append({"type": "function_call_output",
+                                           "call_id": it.get("call_id"), "output": res})
+                    log.info("  cont: round %d, executed %d web_search call(s)", rounds, len(pending_ws))
+                    fbody = dict(body_obj)
+                    fbody["input"] = list(body_obj.get("input") or []) + cont_items
+                    fbody["stream"] = True
+                    try:
+                        freq = client.build_request("POST", url, json=fbody, headers=headers)
+                        new_resp = await client.send(freq, stream=True)
+                    except Exception as e:
+                        log.warning("  cont follow-up connect failed: %s", e)
+                        break
+                    if new_resp.status_code != 200 or "text/event-stream" not in new_resp.headers.get("content-type", ""):
+                        log.warning("  cont follow-up HTTP %s", new_resp.status_code)
+                        await new_resp.aclose()
+                        break
+                    prev = rewriter
+                    rewriter = SseRewriter()
+                    rewriter.seq = prev.seq
+                    rewriter.seen_seq = prev.seen_seq
+                    rewriter.oi_offset = sum(len(o) for o in merged_outputs)
+                    rewriter.drop_lifecycle = True
+                    cur_resp = new_resp
+
+                # 流结束：发出合并后的 response.completed（含各轮 output 与用量）
+                if completed_data is not None:
+                    r = completed_data.get("response") or {}
+                    if resp_id:
+                        r["id"] = resp_id
+                    r["output"] = [it for ro in merged_outputs for it in ro]
+                    if usage_raw:
+                        r["usage"] = usage_raw
+                    rewriter._stamp(completed_data)
+                    yield SseRewriter._emit("response.completed", completed_data)
             except Exception as e:
                 err = str(e)[:300]
             finally:
-                await resp.aclose()
+                await cur_resp.aclose()
                 stats.note_request(ts=t0, method=request.method, path=path,
-                                   model=rewriter.model or model, status=resp.status_code,
+                                   model=model_seen or model, status=resp.status_code,
                                    latency_ms=(time.time() - t0) * 1000, err=err,
-                                   **(rewriter.usage or {}))
+                                   **stats_usage)
 
         return StreamingResponse(gen(), status_code=resp.status_code, headers=out_headers)
 

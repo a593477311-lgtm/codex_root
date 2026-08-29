@@ -75,3 +75,34 @@ k3 等走网关的会话里，模型调用 `web_search` 后永远拿不到结果
   需要用户手动"继续"。
 - `_SEARCH_CACHE` 是进程内存，重启即清空；孤儿 note 会在重启后的
   下一轮请求重新触发一次真实搜索，属预期行为。
+
+## 续轮引擎（2026-08-29 下午，根上消除"断了"体感）
+
+### 现象
+
+模型发出 web_search 后，整个轮次戛然而止：客户端认为该工具是服务端语义、
+不本地执行、也不自动续话，用户只能看到"我去搜一下"然后静默——
+体感就是"又断了"。此前 fulfill 只把结果回填进**下一次**请求，救不了当下这轮。
+
+### 方案
+
+对齐官方 Codex 的服务端工具语义——**响应流内续轮**：
+
+1. 上游响应以 web_search 调用收尾时（`response.completed` 被扣下不转发），
+   桥自己按供应商链执行搜索；
+2. 用"原始 input + 各轮 output + function_call_output(搜索结果)"构造
+   follow-up 请求（保持时间序），继续流式转发，作为**同一条客户端响应**的延续；
+3. 续轮事件处理：丢弃 `response.created/in_progress`、`output_index` 按已发
+   output 数前移、sequence_number 续号；最终只发一个合并版
+   `response.completed`（原 response id、合并 output、合并 usage）；
+4. 上限 `SEARCH_CONT_MAX = 3` 轮防打转；follow-up 失败则优雅回退为
+   "轮次止于搜索调用"（旧行为），历史孤儿仍由请求路径的 fulfill 兜底；
+5. 续轮里模型若改调**客户端工具**（exec_command 等），续轮判定
+   （output 里全部 function_call 都是 web_search 才续）自动放行，
+   由客户端正常接管，两种续话机制不打架。
+
+### 验证
+
+MockTransport 双轮集成测试 7 项全过（续轮事件序列、output_index 前移、
+completed 合并、follow-up 输入顺序），生产实测：kimi 通道
+`cont: round 1, executed 1 web_search call(s)`，轮次内直接给出答案。
