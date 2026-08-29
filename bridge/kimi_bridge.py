@@ -794,6 +794,32 @@ def _merge_usage(acc, u):
                     sub[sk] = sub.get(sk, 0) + sv
 
 
+# 上游不支持的请求体参数黑名单（按上游 host 匹配）。
+# 2026-08-29 实测：kimi coding 端点对 Codex 例行发送的 parallel_tool_calls: false
+# 直接 400（"parallel_tool_calls: false is not supported"），同参数 zhipu/minimax 均接受。
+UNSUPPORTED_BODY_PARAMS = [
+    ("api.kimi.com", ("parallel_tool_calls",)),
+]
+
+
+def _strip_unsupported_params(raw: bytes, upstream: str) -> bytes:
+    drop = [k for host, keys in UNSUPPORTED_BODY_PARAMS if host in (upstream or "") for k in keys]
+    if not drop:
+        return raw
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return raw
+    hit = [k for k in drop if k in body]
+    if not hit:
+        return raw
+    for k in hit:
+        body.pop(k, None)
+    log.info("  strip unsupported params for %s: %s", upstream, hit)
+    stats.note_event("param_strip", f"{upstream}: {','.join(hit)}")
+    return json.dumps(body, ensure_ascii=False).encode("utf-8")
+
+
 app = FastAPI()
 app.include_router(dash.router)
 dash.bridge = sys.modules[__name__]
@@ -935,6 +961,7 @@ async def proxy(path: str, request: Request):
 
         if request.method == "POST" and raw:
             raw = await fulfill_web_searches(raw, chosen_pid, providers)
+            raw = _strip_unsupported_params(raw, current_upstream)
 
         if not active_key:
             auth_path = os.path.join(os.path.dirname(_HERE), "auth.json")
