@@ -438,16 +438,23 @@ async def _native_search(pid, pinfo, query):
             return None
         data = r.json()
         parts = []
+        found_sources = False
         for it in data.get("output") or []:
             if it.get("type") == "web_search_call":
                 act = it.get("action") or {}
                 srcs = [s.get("url") for s in (act.get("sources") or []) if isinstance(s, dict) and s.get("url")]
                 if srcs:
+                    found_sources = True
                     parts.append("来源: " + ", ".join(srcs[:8]))
             elif it.get("type") == "message":
                 for c in it.get("content") or []:
                     if isinstance(c, dict) and c.get("text"):
                         parts.append(c["text"])
+        if not found_sources:
+            # 上游没真执行搜索（如 MiniMax 忽略工具直接脑补答案），视同不支持，
+            # 交给供应商链的下一个；没有来源的"搜索结果"与幻觉无法区分。
+            log.warning("native search via %s: no web_search_call sources, treat as unsupported", pid)
+            return None
         text = "\n\n".join(parts).strip()
         return text[:6000] if text else None
     except Exception as e:
