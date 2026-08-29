@@ -409,6 +409,113 @@ def normalize_body(raw: bytes) -> bytes:
     return json.dumps(body, ensure_ascii=False).encode("utf-8")
 
 
+# --- bridge-executed web_search ------------------------------------------------
+# web_search has server-side semantics in the Codex app: through the bridge the
+# call is recorded but never executed, so repair_orphan_calls fills a note.
+# Here we upgrade those notes into REAL results by re-issuing the query against
+# a provider whose upstream natively executes {"type": "web_search"}.
+SEARCH_CAPABLE = ("zhipu", "minimax")   # probed 2026-08-28: kimi 400/ignored, gemini proxy dead
+_SEARCH_CACHE = {}                       # call_id -> final output text (results or note)
+
+
+async def _native_search(pid, pinfo, query):
+    up = (pinfo.get("upstream") or "").rstrip("/")
+    key = pinfo.get("key")
+    model = pinfo.get("active_model") or (pinfo.get("models") or [None])[0]
+    if not (up and key and model and query):
+        return None
+    payload = {
+        "model": model,
+        "input": [{"role": "user", "content": f"请联网搜索并简要回答:{query}"}],
+        "tools": [{"type": "web_search"}],
+        "stream": False,
+    }
+    try:
+        r = await client.post(f"{up}/v1/responses", json=payload,
+                              headers={"Authorization": f"Bearer {key}"}, timeout=60)
+        if r.status_code != 200:
+            log.warning("native search via %s: HTTP %s", pid, r.status_code)
+            return None
+        data = r.json()
+        parts = []
+        for it in data.get("output") or []:
+            if it.get("type") == "web_search_call":
+                act = it.get("action") or {}
+                srcs = [s.get("url") for s in (act.get("sources") or []) if isinstance(s, dict) and s.get("url")]
+                if srcs:
+                    parts.append("来源: " + ", ".join(srcs[:8]))
+            elif it.get("type") == "message":
+                for c in it.get("content") or []:
+                    if isinstance(c, dict) and c.get("text"):
+                        parts.append(c["text"])
+        text = "\n\n".join(parts).strip()
+        return text[:6000] if text else None
+    except Exception as e:
+        log.warning("native search via %s failed: %s", pid, e)
+        return None
+
+
+async def fulfill_web_searches(raw: bytes, chosen_pid, providers) -> bytes:
+    """Replace orphan web_search notes in the outgoing body with real results."""
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return raw
+    items = body.get("input")
+    if not isinstance(items, list):
+        return raw
+    note = ORPHAN_NOTES.get("web_search")
+    calls = {}
+    targets = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if it.get("type") == "function_call" and it.get("name") == "web_search":
+            try:
+                _a = json.loads(it.get("arguments") or "{}")
+                q = _a.get("query") or _a.get("input") or ""
+            except Exception:
+                q = None
+            calls[it.get("call_id")] = str(q or "")
+        elif it.get("type") == "function_call_output" and it.get("output") == note and it.get("call_id") in calls:
+            targets.append((it.get("call_id"), calls[it["call_id"]], it))
+    if not targets:
+        return raw
+    # 客户端原生 web_search 无参数 schema，模型常发出空 arguments；
+    # 兜底用最近一条用户消息作为查询词
+    fallback_q = ""
+    for it in reversed(items):
+        if isinstance(it, dict) and it.get("type") == "message" and it.get("role") == "user":
+            c = it.get("content")
+            if isinstance(c, str):
+                fallback_q = c
+            elif isinstance(c, list):
+                fallback_q = " ".join(x.get("text", "") for x in c if isinstance(x, dict))
+            if fallback_q.strip():
+                break
+    fallback_q = fallback_q.strip()[:300]
+    chain = []
+    for pid in (chosen_pid, *SEARCH_CAPABLE):
+        if pid in SEARCH_CAPABLE and pid in providers and pid not in chain:
+            chain.append(pid)
+    for cid, query, out_item in targets:
+        if cid not in _SEARCH_CACHE:
+            text = None
+            if not query:
+                query = fallback_q
+                log.info("  web_search orphan %s: empty query, fallback to last user msg (%r)", cid, query[:60])
+            for pid in chain if query else []:
+                text = await _native_search(pid, providers[pid], query)
+                if text:
+                    log.info("  web_search executed via provider '%s' (call_id=%s, q=%s)", pid, cid, query[:40])
+                    stats.note_event("web_search", f"{pid}: {query[:60]}")
+                    break
+            _SEARCH_CACHE[cid] = text or note   # 失败也缓存，避免每轮重试拖慢会话
+        if _SEARCH_CACHE[cid] != note:
+            out_item["output"] = _SEARCH_CACHE[cid]
+    return json.dumps(body, ensure_ascii=False).encode("utf-8")
+
+
 # --- response path: native item restoration ------------------------------------
 
 
@@ -692,6 +799,9 @@ async def proxy(path: str, request: Request):
             active_key = p_info.get("key")
             if matched_pid and matched_pid != active_pid:
                 log.info("  routing: auto-routed model '%s' to provider '%s' (%s)", model, matched_pid, current_upstream)
+
+        if request.method == "POST" and raw:
+            raw = await fulfill_web_searches(raw, chosen_pid, providers)
 
         if not active_key:
             auth_path = os.path.join(os.path.dirname(_HERE), "auth.json")
