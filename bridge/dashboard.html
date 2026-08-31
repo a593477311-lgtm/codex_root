@@ -41,6 +41,22 @@ h1 .em{background:linear-gradient(120deg,var(--v2),#c084fc);-webkit-background-c
 .dcard:hover{transform:translateY(-2px);border-color:#3d3c4c}
 .dcard::after{content:"";position:absolute;right:-22px;top:-22px;width:74px;height:74px;border-radius:50%;background:var(--tint,#8b6cf7);opacity:.1;pointer-events:none}
 .dcard .lbl{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
+.bal-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+@media(max-width:900px){.bal-grid{grid-template-columns:1fr}}
+.bcard{background:linear-gradient(160deg,#1d1b26 0%,#232130 70%);border:1px solid var(--border);border-radius:14px;padding:14px 16px;position:relative;overflow:hidden}
+.bcard::after{content:"";position:absolute;right:-24px;top:-24px;width:80px;height:80px;border-radius:50%;background:var(--btint,#8b6cf7);opacity:.12;pointer-events:none}
+.bcard .bhead{display:flex;align-items:center;gap:9px;margin-bottom:12px}
+.bcard .bdot{width:10px;height:10px;border-radius:3px;background:var(--btint,#8b6cf7);box-shadow:0 0 10px var(--btint,#8b6cf7)}
+.bcard .bname{font-weight:700;font-size:14px}
+.bcard .blevel{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--border);color:var(--sub)}
+.bcard .bwin{margin:10px 0}
+.bcard .bwin .row1{display:flex;justify-content:space-between;font-size:12px;color:var(--sub);margin-bottom:5px}
+.bcard .bwin .row1 b{color:#e8e6f0;font-weight:600}
+.bcard .bbar{height:7px;border-radius:99px;background:#302d3d;overflow:hidden}
+.bcard .bbar i{display:block;height:100%;border-radius:99px;background:var(--bfill,#8b6cf7);transition:width .5s ease}
+.bcard .bwin .row2{display:flex;justify-content:space-between;font-size:11px;color:var(--sub);margin-top:5px}
+.bcard .berr{font-size:12px;color:#f87171;padding:8px 0}
+.bcard .bstale{font-size:11px;color:var(--sub);margin-top:10px;text-align:right;opacity:.8}
 .dcard .val{font-family:"Smiley Sans","Segoe UI",sans-serif;font-size:27px;font-weight:400;margin-top:5px;letter-spacing:.3px;font-variant-numeric:tabular-nums}
 .dcard .sub2{font-size:11.5px;color:var(--faint);margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .ico{width:22px;height:22px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;color:#fff;flex:none;box-shadow:0 2px 8px rgba(0,0,0,.35)}
@@ -157,6 +173,10 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
 
 <div id="page-dash">
   <div class="cards" id="statCards"><div class="skel" style="grid-column:1/-1"></div></div>
+  <div class="panel">
+    <h3>Coding Plan 余额<span class="right">Kimi · 智谱 · MiniMax 订阅额度与重置倒计时</span></h3>
+    <div class="bal-grid" id="balanceCards"><div class="skel" style="height:120px"></div><div class="skel" style="height:120px"></div><div class="skel" style="height:120px"></div></div>
+  </div>
   <div class="panel"><h3>Token 趋势<span class="right">按天 · 分模型 · 悬停查看明细</span></h3><div class="svgwrap" id="trend"></div><div class="legend" id="trendLegend" style="flex-direction:row;gap:18px;margin-top:10px;flex-wrap:wrap"></div></div>
   <div class="split">
     <div class="panel"><h3>活跃热力图<span class="right">最近 10 周</span></h3><div class="svgwrap" id="heatmap"></div></div>
@@ -982,8 +1002,44 @@ async function deleteCurrentProvider(){
   }
 }
 
+const BAL_TINT={kimi:"#8b6cf7",zhipu:"#38bdf8",minimax:"#f87171"};
+function fmtReset(ms){
+  if(!ms)return"";
+  const d=ms-Date.now();if(d<=0)return"即将重置";
+  const h=d/3600000;
+  if(h>=24)return`${Math.floor(h/24)}天${Math.floor(h%24)}时后重置`;
+  if(h>=1)return`${Math.floor(h)}时${Math.floor(h%1*60)}分后重置`;
+  return`${Math.max(1,Math.floor(d/60000))}分后重置`;
+}
+function fmtCount(v){return v==null?"—":(v>=10000?(v/1000).toFixed(1)+"k":String(v))}
+function barColor(p){return p==null?"#8b6cf7":p>=85?"#f87171":p>=60?"#facc15":"#4ade80"}
+function renderBalance(d){
+  const wrap=$("#balanceCards");if(!d||!d.providers){wrap.innerHTML='<div class="skel" style="grid-column:1/-1;height:60px"></div>';return}
+  wrap.innerHTML=d.providers.map(p=>{
+    const tint=BAL_TINT[p.id]||"#8b6cf7";
+    if(!p.ok)return`<div class="bcard" style="--btint:${tint}"><div class="bhead"><i class="bdot"></i><span class="bname">${p.name}</span></div><div class="berr">查询失败：${p.error||"未知错误"}</div></div>`;
+    const wins=(p.windows||[]).map(w=>{
+      const pct=w.used_pct!=null?Math.max(0,Math.min(100,w.used_pct)):null;
+      const cnt=(w.total!=null)?`${fmtCount(w.used)} / ${fmtCount(w.total)}`:(pct!=null?`已用 ${pct}%`:"");
+      return`<div class="bwin">
+        <div class="row1"><span>${w.label}</span><b>${cnt}</b></div>
+        <div class="bbar"><i style="width:${pct??100}%;background:${barColor(pct)}"></i></div>
+        <div class="row2"><span>${pct!=null?`已用 ${pct}%`:""}</span><span>${fmtReset(w.reset_ms)}</span></div>
+      </div>`}).join("");
+    return`<div class="bcard" style="--btint:${tint}">
+      <div class="bhead"><i class="bdot"></i><span class="bname">${p.name}</span>${p.level?`<span class="blevel">${p.level}</span>`:""}</div>
+      ${wins||'<div class="berr">无窗口数据</div>'}
+      <div class="bstale">${d.cached?"缓存":"已刷新"} · ${new Date(d.fetched_at).toLocaleTimeString()}</div>
+    </div>`}).join("");
+}
+async function loadBalance(){
+  try{const d=await api("/dashboard/api/balance");renderBalance(d)}
+  catch(e){const wrap=$("#balanceCards");if(wrap)wrap.innerHTML=`<div class="skel" style="grid-column:1/-1;height:60px"></div>`}
+}
+
 // 页面初始化
 loadDash();
+loadBalance();
 loadHealth();
 loadProviders();
 
@@ -992,6 +1048,7 @@ if(location.hash === "#settings") showTab("settings");
 else if(location.hash === "#events") showTab("events");
 
 setInterval(()=>{if(!$("#page-dash").classList.contains("hidden"))loadDash()},10000);
+setInterval(()=>{if(!$("#page-dash").classList.contains("hidden"))loadBalance()},300000);
 setInterval(loadHealth,30000);
 
 </script>

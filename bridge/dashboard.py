@@ -507,3 +507,181 @@ async def api_delete_provider(request: Request):
     cfg["providers"] = providers
     save_config(cfg, backup=False)
     return {"ok": True, "deleted": p_id}
+
+
+# --- Coding Plan balance ----------------------------------------------------
+# Queries each provider's official subscription-quota endpoint and normalizes
+# the result into {windows: [{label, used, total, remaining, used_pct, reset_ms}]}.
+# Keys never leave the server; failures degrade to per-provider error cards.
+
+_BALANCE_CACHE = {"ts": 0.0, "data": None}
+_BALANCE_TTL = 60.0
+_KIMI_LEVELS = {
+    "LEVEL_ADVANCED": "Advanced",
+    "LEVEL_PRO": "Pro",
+    "LEVEL_MAX": "Max",
+    "LEVEL_STANDARD": "Standard",
+    "LEVEL_LITE": "Lite",
+}
+
+
+def _to_num(v):
+    try:
+        f = float(v)
+        return int(f) if f == int(f) else f
+    except (TypeError, ValueError):
+        return None
+
+
+def _pct(used, total):
+    try:
+        u, t = float(used), float(total)
+        return round(u / t * 100, 1) if t > 0 else None
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _iso_to_ms(v):
+    try:
+        return int(datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+                   .timestamp() * 1000)
+    except Exception:
+        return None
+
+
+async def _fetch_kimi_balance(client, key):
+    r = await client.get("https://api.kimi.com/coding/v1/usages",
+                         headers={"Authorization": f"Bearer {key}"})
+    r.raise_for_status()
+    d = r.json()
+    windows = []
+    top = d.get("usage") or {}
+    windows.append({
+        "label": "周配额",
+        "used": _to_num(top.get("used")),
+        "total": _to_num(top.get("limit")),
+        "remaining": _to_num(top.get("remaining")),
+        "reset_ms": _iso_to_ms(top.get("resetTime")),
+    })
+    for lim in d.get("limits") or []:
+        det = lim.get("detail") or {}
+        win = lim.get("window") or {}
+        hours = None
+        if win.get("timeUnit") == "TIME_UNIT_MINUTE":
+            hours = (win.get("duration") or 0) / 60
+        windows.append({
+            "label": f"{int(hours)} 小时窗口" if hours else "窗口配额",
+            "used": _to_num(det.get("used")),
+            "total": _to_num(det.get("limit")),
+            "remaining": _to_num(det.get("remaining")),
+            "reset_ms": _iso_to_ms(det.get("resetTime")),
+        })
+    for w in windows:
+        w["used_pct"] = _pct(w["used"], w["total"])
+    lvl = ((d.get("user") or {}).get("membership") or {}).get("level") or ""
+    return {"level": _KIMI_LEVELS.get(lvl, lvl or None), "windows": windows}
+
+
+async def _fetch_zhipu_balance(client, key):
+    r = await client.get("https://open.bigmodel.cn/api/monitor/usage/quota/limit",
+                         headers={"Authorization": key})
+    r.raise_for_status()
+    d = r.json()
+    data = d.get("data") or {}
+    windows = []
+    for lim in data.get("limits") or []:
+        if lim.get("type") != "CREDIT_LIMIT":
+            continue
+        unit, number = lim.get("unit"), lim.get("number")
+        if unit == 3 and number == 5:
+            label = "5 小时额度"
+        elif unit == 6 and number == 1:
+            label = "周额度"
+        else:
+            label = f"额度 {number}/{unit}"
+        total = _to_num(lim.get("usage"))
+        used = _to_num(lim.get("currentValue"))
+        pct = lim.get("percentage")
+        windows.append({
+            "label": label,
+            "used": used,
+            "total": total,
+            "remaining": _to_num(lim.get("remaining")),
+            "used_pct": _to_num(pct) if pct is not None else _pct(used, total),
+            "reset_ms": lim.get("nextResetTime"),
+        })
+    return {"level": data.get("level") or None, "windows": windows}
+
+
+async def _fetch_minimax_balance(client, key):
+    r = await client.get(
+        "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains",
+        headers={"Authorization": f"Bearer {key}"})
+    r.raise_for_status()
+    d = r.json()
+    if (d.get("base_resp") or {}).get("status_code") not in (0, None):
+        raise RuntimeError((d.get("base_resp") or {}).get("status_msg") or "minimax api error")
+    gen = next((m for m in d.get("model_remains") or []
+                if m.get("model_name") == "general"), None)
+    if not gen:
+        raise RuntimeError("no general-plan entry")
+    now_ms = int(time.time() * 1000)
+    windows = []
+    # NOTE: per MiniMax issue #99, *_usage_count actually means REMAINING.
+    i_total = _to_num(gen.get("current_interval_total_count"))
+    i_rem = _to_num(gen.get("current_interval_usage_count"))
+    w_total = _to_num(gen.get("current_weekly_total_count"))
+    w_rem = _to_num(gen.get("current_weekly_usage_count"))
+    windows.append({
+        "label": "5 小时窗口",
+        "used": (i_total - i_rem) if i_total and i_rem is not None else None,
+        "total": i_total or None,
+        "remaining": i_rem or None,
+        "used_pct": _to_num(100 - (gen.get("current_interval_remaining_percent") or 0)),
+        "reset_ms": now_ms + int(gen.get("remains_time") or 0),
+    })
+    windows.append({
+        "label": "周配额",
+        "used": (w_total - w_rem) if w_total and w_rem is not None else None,
+        "total": w_total or None,
+        "remaining": w_rem or None,
+        "used_pct": _to_num(100 - (gen.get("current_weekly_remaining_percent") or 0)),
+        "reset_ms": now_ms + int(gen.get("weekly_remains_time") or 0),
+    })
+    return {"level": None, "windows": windows}
+
+
+async def _fetch_one(client, pid, name, key):
+    try:
+        if pid == "kimi":
+            data = await _fetch_kimi_balance(client, key)
+        elif pid == "zhipu":
+            data = await _fetch_zhipu_balance(client, key)
+        elif pid == "minimax":
+            data = await _fetch_minimax_balance(client, key)
+        else:
+            return {"id": pid, "name": name, "ok": False, "error": "unsupported"}
+        return {"id": pid, "name": name, "ok": True, **data}
+    except Exception as e:
+        return {"id": pid, "name": name, "ok": False, "error": str(e)[:200]}
+
+
+@router.get("/dashboard/api/balance")
+async def api_balance(refresh: bool = False):
+    import asyncio
+    now = time.time()
+    if (not refresh and _BALANCE_CACHE["data"] is not None
+            and now - _BALANCE_CACHE["ts"] < _BALANCE_TTL):
+        return {**_BALANCE_CACHE["data"], "cached": True}
+    cfg = load_config()
+    providers = cfg.get("providers", {})
+    wanted = [("kimi", "Kimi For Coding"), ("zhipu", "智谱 BigModel"), ("minimax", "MiniMax")]
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        results = await asyncio.gather(*[
+            _fetch_one(client, pid, providers.get(pid, {}).get("name", name),
+                       (providers.get(pid) or {}).get("key", ""))
+            for pid, name in wanted
+        ])
+    data = {"fetched_at": int(now * 1000), "providers": list(results)}
+    _BALANCE_CACHE.update(ts=now, data=data)
+    return {**data, "cached": False}
