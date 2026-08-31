@@ -12,6 +12,7 @@
   --v1:#8b6cf7; --v2:#a98bfa; --v3:#c3aefb; --v4:#dccffb;
   --blue:#5b9cff; --green:#39d353; --cyan:#2bc8e6; --amber:#f5a623; --red:#f26d6a;
   --g0:#26252e; --g1:#0e4429; --g2:#006d32; --g3:#26a641; --g4:#39d353;
+  --dur-1:.15s; --dur-2:.18s; --ease:cubic-bezier(.2,.8,.2,1);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{color-scheme:dark}
@@ -43,17 +44,19 @@ h1 .em{background:linear-gradient(120deg,var(--v2),#c084fc);-webkit-background-c
 .dcard .lbl{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
 .bal-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
 @media(max-width:900px){.bal-grid{grid-template-columns:1fr}}
-.bcard{background:linear-gradient(160deg,#1d1b26 0%,#232130 70%);border:1px solid var(--border);border-radius:14px;padding:14px 16px;position:relative;overflow:hidden}
+.bcard{background:linear-gradient(160deg,#1d1b26 0%,#232130 70%);border:1px solid var(--border);border-radius:14px;padding:15px 17px;position:relative;overflow:hidden;transition:transform var(--dur-2),border-color var(--dur-2)}
+.bcard:hover{transform:translateY(-2px);border-color:#3d3c4c}
 .bcard::after{content:"";position:absolute;right:-24px;top:-24px;width:80px;height:80px;border-radius:50%;background:var(--btint,#8b6cf7);opacity:.12;pointer-events:none}
 .bcard .bhead{display:flex;align-items:center;gap:9px;margin-bottom:12px}
 .bcard .bdot{width:10px;height:10px;border-radius:3px;background:var(--btint,#8b6cf7);box-shadow:0 0 10px var(--btint,#8b6cf7)}
+.bcard .blogo{width:22px;height:22px;border-radius:6px;flex:none;box-shadow:0 2px 8px rgba(0,0,0,.35)}
 .bcard .bname{font-weight:700;font-size:14px}
 .bcard .blevel{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--border);color:var(--sub)}
 .bcard .bwin{margin:10px 0}
 .bcard .bwin .row1{display:flex;justify-content:space-between;font-size:12px;color:var(--sub);margin-bottom:5px}
 .bcard .bwin .row1 b{color:#e8e6f0;font-weight:600}
 .bcard .bbar{height:7px;border-radius:99px;background:#302d3d;overflow:hidden}
-.bcard .bbar i{display:block;height:100%;border-radius:99px;background:var(--bfill,#8b6cf7);transition:width .5s ease}
+.bcard .bbar i{display:block;height:100%;border-radius:99px;background:var(--bfill,#8b6cf7);transition:width .8s var(--ease)}
 .bcard .bwin .row2{display:flex;justify-content:space-between;font-size:11px;color:var(--sub);margin-top:5px}
 .bcard .berr{font-size:12px;color:#f87171;padding:8px 0}
 .bcard .bstale{font-size:11px;color:var(--sub);margin-top:10px;text-align:right;opacity:.8}
@@ -143,13 +146,16 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
 ::-webkit-scrollbar-track{background:transparent}
 
 .prov-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:14px}
-.prov-card{background:linear-gradient(160deg,#221f2b 0%,var(--dcard) 70%);border:1px solid var(--border);border-radius:12px;padding:11px 13px;cursor:pointer;transition:all .18s;position:relative}
+.prov-card{background:linear-gradient(160deg,#221f2b 0%,var(--dcard) 70%);border:1px solid var(--border);border-radius:14px;padding:12px 14px;cursor:pointer;transition:transform var(--dur-2),border-color var(--dur-2),box-shadow var(--dur-2),background var(--dur-2);position:relative}
 .prov-card:hover{border-color:#3d3c4c;transform:translateY(-1px)}
 .prov-card.active{background:linear-gradient(160deg,#292138 0%,#1b1924 100%);border-color:var(--v1);box-shadow:0 0 0 1px rgba(139,108,247,.3)}
 .prov-head{display:flex;align-items:center;gap:7px;font-weight:600;font-size:12.5px;color:var(--ink)}
 .prov-dot{width:7px;height:7px;border-radius:50%;background:var(--faint);transition:all .15s;flex:none}
 .prov-card.active .prov-dot{background:var(--green);box-shadow:0 0 6px rgba(57,211,83,.6)}
+.prov-logo{width:18px;height:18px;border-radius:5px;flex:none}
 .prov-model{font-size:11px;color:var(--sub);margin-top:5px;font-family:Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mcell{display:inline-flex;align-items:center;gap:7px}
+.mcell img{width:16px;height:16px;border-radius:4px;flex:none}
 
 </style>
 </head>
@@ -362,6 +368,17 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
 <script>
 const $=s=>document.querySelector(s);
 let days=7,picked=null,lastRows=[],seenKeys=new Set(),firstRender=true,pendingAnim=true;
+const VENDOR_ICON={kimi:"icon-kimi.png",zhipu:"icon-zhipu.png",minimax:"icon-minimax.png",gemini:"icon-gemini.png"};
+function vendorOf(id,model){
+  const s=((id||"")+" "+(model||"")).toLowerCase();
+  if(/glm|zhipu|chatglm/.test(s))return"zhipu";
+  if(/minimax/.test(s))return"minimax";
+  if(/gemini/.test(s))return"gemini";
+  if(/kimi|moonshot|\bk3\b/.test(s))return"kimi";
+  const k=(id||"").toLowerCase();
+  return VENDOR_ICON[k]?k:"";
+}
+function vendorImg(v,cls){const f=VENDOR_ICON[v];return f?`<img ${cls?`class="${cls}" `:""}src="/dashboard/assets/${f}" alt="" onerror="this.style.display='none'">`:"";}
 const VPAL=["#8b6cf7","#39d353","#2bc8e6","#f5a623","#f26d6a","#a98bfa","#8bc34a","#f472b6"];
 function fmt(n){n=+n||0;if(n>=1e8)return(n/1e8).toFixed(2)+" 亿";if(n>=1e4){const v=(n/1e4).toFixed(1);return(v.endsWith(".0")?v.slice(0,-2):v)+" 万"}return n.toLocaleString()}
 function fmtT(ts){const d=new Date(ts*1000);const p=x=>String(x).padStart(2,"0");return`${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`}
@@ -498,7 +515,7 @@ function renderTable(rows){
   $("#reqTable tbody").innerHTML=rows.map(r=>{const cacheRate=r.in_tok?(r.cached_tok/r.in_tok*100).toFixed(1)+"%":"—";
     const k=rowKey(r),isNew=!firstRender&&!seenKeys.has(k);seenKeys.add(k);
     const st=r.err?`<span class="pill r">错误</span>`:(r.status>=400?`<span class="pill r">${r.status}</span>`:`<span class="pill g">${r.status||"OK"}</span>`);
-    return`<tr class="${isNew?"flash":""}"><td>${fmtT(r.ts)}</td><td>${fmtLat(r.latency_ms||0)}</td><td>${fmt(r.in_tok)}</td><td>${fmt(r.out_tok)}</td><td>${fmt(r.cached_tok)}</td><td>${cacheRate}</td><td>${r.model||"—"}</td><td>${st}</td></tr>`}).join("");
+    return`<tr class="${isNew?"flash":""}"><td>${fmtT(r.ts)}</td><td>${fmtLat(r.latency_ms||0)}</td><td>${fmt(r.in_tok)}</td><td>${fmt(r.out_tok)}</td><td>${fmt(r.cached_tok)}</td><td>${cacheRate}</td><td><span class="mcell">${vendorImg(vendorOf("",r.model))}<span>${r.model||"—"}</span></span></td><td>${st}</td></tr>`}).join("");
   firstRender=false;
 }
 
@@ -754,6 +771,7 @@ function renderProviderUI(){
     return `<div onclick="selectProvider('${id}')" class="prov-card ${isAct ? 'active' : ''}">
       <div class="prov-head">
         <span class="prov-dot"></span>
+        ${vendorImg(vendorOf(id,modelTag),"prov-logo")}
         <span class="prov-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.name || id}">${p.name || id}</span>
         ${isCustom ? `<span class="pill" style="font-size:9.5px;padding:0.5px 5px;margin-left:auto">自定义</span>` : ''}
       </div>
@@ -1003,6 +1021,7 @@ async function deleteCurrentProvider(){
 }
 
 const BAL_TINT={kimi:"#8b6cf7",zhipu:"#38bdf8",minimax:"#f87171"};
+let balFirst=true;
 function fmtReset(ms){
   if(!ms)return"";
   const d=ms-Date.now();if(d<=0)return"即将重置";
@@ -1017,20 +1036,22 @@ function renderBalance(d){
   const wrap=$("#balanceCards");if(!d||!d.providers){wrap.innerHTML='<div class="skel" style="grid-column:1/-1;height:60px"></div>';return}
   wrap.innerHTML=d.providers.map(p=>{
     const tint=BAL_TINT[p.id]||"#8b6cf7";
-    if(!p.ok)return`<div class="bcard" style="--btint:${tint}"><div class="bhead"><i class="bdot"></i><span class="bname">${p.name}</span></div><div class="berr">查询失败：${p.error||"未知错误"}</div></div>`;
+    if(!p.ok)return`<div class="bcard" style="--btint:${tint}"><div class="bhead">${vendorImg(p.id,"blogo")||'<i class="bdot"></i>'}<span class="bname">${p.name}</span></div><div class="berr">查询失败：${p.error||"未知错误"}</div></div>`;
     const wins=(p.windows||[]).map(w=>{
       const pct=w.used_pct!=null?Math.max(0,Math.min(100,w.used_pct)):null;
       const cnt=(w.total!=null)?`${fmtCount(w.used)} / ${fmtCount(w.total)}`:(pct!=null?`已用 ${pct}%`:"");
       return`<div class="bwin">
         <div class="row1"><span>${w.label}</span><b>${cnt}</b></div>
-        <div class="bbar"><i style="width:${pct??100}%;background:${barColor(pct)}"></i></div>
+        <div class="bbar"><i data-w="${pct??100}" style="width:0;background:${barColor(pct)}"></i></div>
         <div class="row2"><span>${pct!=null?`已用 ${pct}%`:""}</span><span>${fmtReset(w.reset_ms)}</span></div>
       </div>`}).join("");
     return`<div class="bcard" style="--btint:${tint}">
-      <div class="bhead"><i class="bdot"></i><span class="bname">${p.name}</span>${p.level?`<span class="blevel">${p.level}</span>`:""}</div>
+      <div class="bhead">${vendorImg(p.id,"blogo")||'<i class="bdot"></i>'}<span class="bname">${p.name}</span>${p.level?`<span class="blevel">${p.level}</span>`:""}</div>
       ${wins||'<div class="berr">无窗口数据</div>'}
       <div class="bstale">${d.cached?"缓存":"已刷新"} · ${new Date(d.fetched_at).toLocaleTimeString()}</div>
     </div>`}).join("");
+  requestAnimationFrame(()=>wrap.querySelectorAll(".bbar i").forEach(i=>i.style.width=i.dataset.w+"%"));
+  if(balFirst){balFirst=false;requestAnimationFrame(()=>gsap.from("#balanceCards .bcard",{y:14,autoAlpha:0,duration:.5,stagger:.07,ease:"power3.out",clearProps:"all"}))}
 }
 async function loadBalance(){
   try{const d=await api("/dashboard/api/balance");renderBalance(d)}
