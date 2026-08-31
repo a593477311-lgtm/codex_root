@@ -106,3 +106,43 @@ k3 等走网关的会话里，模型调用 `web_search` 后永远拿不到结果
 MockTransport 双轮集成测试 7 项全过（续轮事件序列、output_index 前移、
 completed 合并、follow-up 输入顺序），生产实测：kimi 通道
 `cont: round 1, executed 1 web_search call(s)`，轮次内直接给出答案。
+
+## 搜索反馈 UX（2026-08-31）：让"正在搜索"看得见
+
+### 现象
+
+续轮引擎上线后搜索功能活了，但**搜索期间 UI 无任何反馈**——
+客户端只有 "Working / Thinking"，用户分不清是在搜还是卡死。
+
+### 根因（GLM-5.3 调研线程查实，主会话独立复核）
+
+客户端渲染"Searching the web for X"的依据是 `web_search_call` item 的
+**status 字段**（`in_progress`→转圈，`completed`→完成态），由
+`output_item.added/done` 两帧驱动；官方文档里的
+`response.web_search_call.in_progress/searching/completed` 阶段事件
+**这个客户端的 SSE 解析器没有对应 case，发了也被吞**——所以修复点
+不在补发阶段事件，而在两帧的**时机与内容**：
+
+1. 桥原来在上游函数调用一结束就把 added+done 背靠背发出且
+   `status` 硬编码 `completed`——UI 闪一下"已搜索"然后整个搜索窗口静默；
+2. item 缺 `action` 字段——UI 从 `action.query` 取词，缺了显示为空。
+
+### 修复（kimi_bridge.py，bridge/test_web_search_ux.py 33 项全绿）
+
+1. `rewrite_output_item`：web_search_call 补 `action: {type: search, query}`；
+2. `SseRewriter`：web_search 拆帧——上游 done 到达时先发
+   `status: in_progress` 的 added（UI 开始转圈），done 帧暂存；
+3. 续轮引擎：每次 `_execute_search` 完成后 flush 对应 done
+   （回填实际执行的查询词，含 fallback 词）；发合并 completed 前
+   兜底清空全部暂存 done（任何退出路径条目不悬挂）。
+
+生产实测事件时序：added(in_progress) 09:21:38 → kimi 真搜 18s →
+done(completed) 09:21:56 → 续轮内容流出——搜索全程 UI 有"正在搜索"反馈。
+
+### 运维备忘
+
+- 搜索供应商健康波动会影响 UX 窗口长度：2026-08-31 曾测得 zhipu 60s
+  超时 + kimi 无证据 + minimax 不支持的三连降级（静默 103s）。
+  若用户报"搜索特别久"，先查日志里 `native search via` 的 WARNING。
+- 续轮路径的搜索不写 `_SEARCH_CACHE`，同一 call 的结果不会被
+  请求侧 fulfill 复用——目前可接受，若嫌浪费可后续打通。

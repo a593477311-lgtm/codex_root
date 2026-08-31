@@ -631,14 +631,20 @@ def rewrite_output_item(item):
                 "name": name,
                 "input": text,
             }, True
-        return {
+        native = {
             "type": special_names[name],
             "id": item.get("id"),
             "call_id": item.get("call_id"),
             "status": "completed",
             "execution": "client",
             "arguments": args_obj,
-        }, True
+        }
+        # web_search: action (Codex client renders query from action.query)
+        if native["type"] == "web_search_call" and isinstance(args_obj, dict):
+            q = args_obj.get("query") or args_obj.get("input")
+            if q:
+                native["action"] = {"type": "search", "query": str(q)}
+        return native, True
     ns = name_to_ns.get(name)
     if ns and "namespace" not in item:
         item = dict(item)
@@ -667,6 +673,7 @@ class SseRewriter:
         self.model = None
         self.oi_offset = 0        # 搜索续轮：本轮 output_index 需要的前移量
         self.drop_lifecycle = False  # 搜索续轮：丢弃 response.created/in_progress
+        self.pending_search_dones = []  # web_search：延迟到真实搜索完成再发的 done 帧
 
     def _stamp(self, data):
         if isinstance(data, dict) and ("sequence_number" in data or self.seen_seq):
@@ -737,6 +744,16 @@ class SseRewriter:
                 self.pending.pop(iid, None)
                 native, _ = rewrite_output_item(item)
                 log.info("  resp: emit native '%s' (call_id=%s)", native.get("type"), native.get("call_id"))
+                if native.get("type") == "web_search_call":
+                    # UX：先发 status=in_progress 的壳（客户端渲染"正在搜索"），
+                    # done 帧暂存，待桥真实搜索完成后再发（见 gen() 的 flush）。
+                    in_progress = dict(native)
+                    in_progress["status"] = "in_progress"
+                    added = {"type": "response.output_item.added", "output_index": data.get("output_index"), "item": in_progress}
+                    done_item = dict(native)  # status 保持 completed（历史项语义）
+                    done = {"type": "response.output_item.done", "output_index": data.get("output_index"), "item": done_item}
+                    self.pending_search_dones.append(done)
+                    return [("response.output_item.added", added)]
                 added = {"type": "response.output_item.added", "output_index": data.get("output_index"), "item": native}
                 done = {"type": "response.output_item.done", "output_index": data.get("output_index"), "item": native}
                 return [("response.output_item.added", added), ("response.output_item.done", done)]
@@ -1021,6 +1038,23 @@ async def proxy(path: str, request: Request):
             model_seen = None
             last_raw_out = []
             rounds = 0
+            search_dones = []  # 各轮暂存的 web_search done 帧（gen 级汇总，兜底不丢）
+
+            def _flush_ws_dones(call_id=None, query=None):
+                """发出延迟的 web_search done 帧。call_id=None 时全部发出（completed 前兜底）；
+                query 非 None 时回填实际执行的查询词（含空 query 的 fallback 词）。"""
+                out = []
+                for d in list(search_dones):
+                    item = d.get("item") or {}
+                    if call_id is not None and item.get("call_id") != call_id:
+                        continue
+                    if query is not None:
+                        item["action"] = {"type": "search", "query": query}
+                    search_dones.remove(d)
+                    rewriter._stamp(d)
+                    log.info("  resp: web_search_call done (call_id=%s)", item.get("call_id"))
+                    out.append(SseRewriter._emit("response.output_item.done", d))
+                return out
 
             async def _lines(stream):
                 async for line in stream.aiter_lines():
@@ -1055,6 +1089,9 @@ async def proxy(path: str, request: Request):
                                 yield c
                         block = []
                     await cur_resp.aclose()
+                    # 本轮流里暂存的 web_search done 帧汇入 gen 级列表（防 rewriter 换轮丢失）
+                    search_dones.extend(rewriter.pending_search_dones)
+                    rewriter.pending_search_dones = []
 
                     # —— 搜索续轮判定：本轮 output 里的工具调用全是 web_search 才续 ——
                     pending_ws = [it for it in last_raw_out
@@ -1064,11 +1101,18 @@ async def proxy(path: str, request: Request):
                         break
                     rounds += 1
                     for it in pending_ws:
-                        res = await _execute_search(_extract_call_query(it.get("arguments")),
+                        # 与 _execute_search 相同的取词逻辑（含空 query 的用户消息兜底），
+                        # 便于把实际执行的查询词回填到 done 帧的 action.query。
+                        q = (_extract_call_query(it.get("arguments")) or "").strip()
+                        if not q:
+                            q = _fallback_query((body_obj.get("input") or []) + cont_items)
+                        res = await _execute_search(q,
                                                     (body_obj.get("input") or []) + cont_items,
                                                     chosen_pid, providers)
                         cont_items.append({"type": "function_call_output",
                                            "call_id": it.get("call_id"), "output": res})
+                        for chunk in _flush_ws_dones(it.get("call_id"), q or ""):
+                            yield chunk
                     log.info("  cont: round %d, executed %d web_search call(s)", rounds, len(pending_ws))
                     fbody = dict(body_obj)
                     fbody["input"] = list(body_obj.get("input") or []) + cont_items
@@ -1091,6 +1135,10 @@ async def proxy(path: str, request: Request):
                     rewriter.drop_lifecycle = True
                     cur_resp = new_resp
 
+                # 兜底：所有退出路径（混合工具不续轮/SEARCH_CONT_MAX 用尽/follow-up 失败）
+                # 在合并 completed 前清空暂存的 done 帧，保证条目不会永远挂在 in_progress。
+                for chunk in _flush_ws_dones():
+                    yield chunk
                 # 流结束：发出合并后的 response.completed（含各轮 output 与用量）
                 if completed_data is not None:
                     r = completed_data.get("response") or {}
