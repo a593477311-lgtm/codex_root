@@ -80,6 +80,7 @@ def load_bridge_sandboxed():
 
 
 kb = load_bridge_sandboxed()
+_ORIG_EXECUTE_SEARCH = kb._execute_search  # some cases monkeypatch it; restore between cases
 
 # ---------------------------------------------------------------- SSE 构造/解析
 
@@ -554,6 +555,177 @@ async def s6_roundtrip_fulfill_compat():
     check("S6[14c] fulfill replaces orphan note", got.get("output") == "FULFILLED")
 
 
+async def s7_rollout_shape_fulfill():
+    """S7: rollout real shape (web_search_call with only action) + delegation-only
+    user messages — fulfill must re-execute each exact action.query (incident 2026-08-31)."""
+    items = [
+        {"type": "message", "role": "user",
+         "content": [{"type": "input_text",
+                      "text": "<environment_context>\n<cwd>E:\\code</cwd>\n</environment_context>"}]},
+        {"type": "message", "role": "user",
+         "content": [{"type": "input_text",
+                      "text": "<codex_delegation>\n<input>调研运行时信息注入</input>\n</codex_delegation>"}]},
+    ]
+    queries = ["LangChain context injection", "Anthropic prompt caching"]
+    for i, q in enumerate(queries):
+        items.append({"type": "web_search_call", "id": f"fc_call_s7_{i}",
+                      "status": "completed",
+                      "action": {"type": "search", "query": q},
+                      "internal_chat_message_metadata_passthrough": {"turn_id": "t7"}})
+    executed = []
+
+    async def fake_native(pid, pinfo, q):
+        executed.append(q)
+        return f"MOCK结果:{q}"
+
+    kb._execute_search = _ORIG_EXECUTE_SEARCH
+    kb._native_search = fake_native
+    kb._SEARCH_CACHE.clear()
+    raw = kb.normalize_body(json.dumps({"input": items}, ensure_ascii=False).encode("utf-8"))
+    check("S7[15a] delegation-only fallback recovers <input> body",
+          kb._fallback_query(json.loads(raw)["input"]) == "调研运行时信息注入")
+    out = await kb.fulfill_web_searches(
+        raw, "zhipu",
+        {"zhipu": {"upstream": "http://x", "key": "k", "active_model": "m"}})
+    ob = json.loads(out)
+    replaced = [it for it in ob["input"]
+                if isinstance(it, dict) and str(it.get("output", "")).startswith("MOCK结果:")]
+    check("S7[15b] fulfill replaced both notes via action.query",
+          len(replaced) == 2 and executed == queries)
+    fc_args = [it.get("arguments") for it in ob["input"]
+               if isinstance(it, dict) and it.get("type") == "function_call"
+               and it.get("name") == "web_search"]
+    check("S7[15c] normalized function_call keeps original query",
+          [json.loads(a).get("query") for a in fc_args] == queries)
+
+
+async def s8_delegation_fallback_and_warning():
+    """S8: delegation <input> body works as query fallback; a fully unusable
+    query must be observable (warning + stats event), never silent."""
+    check("S8[16a] _extract_delegation_text recovers <input> body",
+          kb._extract_delegation_text(
+              "<codex_delegation>\n<input>调研运行时注入</input>\n</codex_delegation>"
+          ) == "调研运行时注入")
+    check("S8[16b] malformed delegation falls back to original",
+          kb._extract_delegation_text(
+              "<codex_delegation>no input tag</codex_delegation>"
+          ).startswith("<codex_delegation>"))
+    check("S8[16c] _fallback_query uses delegation <input> body",
+          kb._fallback_query([{
+              "type": "message", "role": "user",
+              "content": [{"type": "input_text",
+                           "text": "<codex_delegation>\n<input>调研运行时信息注入最佳实践</input>\n</codex_delegation>"}],
+          }]) == "调研运行时信息注入最佳实践")
+
+    events = []
+    kb._execute_search = _ORIG_EXECUTE_SEARCH  # undo S6/S7 mocks — test the real path
+    kb.stats.note_event = lambda name, detail="": events.append((name, detail))
+    got = await kb._execute_search(
+        "", [{"type": "message", "role": "user",
+              "content": [{"type": "input_text",
+                           "text": "<codex_delegation>无 input 标签</codex_delegation>"}]}],
+        "zhipu", {})
+    check("S8[16d] no-query call returns note + emits event",
+          got == kb.ORPHAN_NOTES["web_search"]
+          and events and events[-1][0] == "web_search_no_query")
+
+
+async def s9_final_round_wrapup():
+    """S9: at SEARCH_CONT_MAX the final follow-up drops web_search and injects
+    a wrap-up instruction — every search really executed, final text produced,
+    no fake 1ms-completed search."""
+    old_max = kb.SEARCH_CONT_MAX
+    kb.SEARCH_CONT_MAX = 3
+    try:
+        def ws_resp(rid, fc_id, q):
+            args = json.dumps({"query": q}, ensure_ascii=False)
+            return sse([
+                fr_created(rid),
+                fr_fc_added(fc_id, "web_search"),
+                fr_fc_delta(fc_id, args),
+                fr_fc_done(fc_id, "web_search", args),
+                fr_completed(rid, [_fc_item(fc_id, "web_search", args)],
+                             {"input_tokens": 10, "output_tokens": 2}),
+            ])
+
+        finals = sse([
+            fr_created("resp_final"),
+            fr_msg_added("msg_final"),
+            fr_msg_delta("msg_final", "最终结论"),
+            fr_msg_done("msg_final", "最终结论"),
+            fr_completed("resp_final",
+                         [{"id": "msg_final", "type": "message", "status": "completed",
+                           "content": [{"type": "output_text", "text": "最终结论", "annotations": []}]}],
+                         {"input_tokens": 30, "output_tokens": 9}),
+        ])
+        responses = [ws_resp("resp_w1", "fc_w1", "q1"),
+                     ws_resp("resp_w2", "fc_w2", "q2"),
+                     ws_resp("resp_w3", "fc_w3", "q3"),
+                     finals]
+        n = {"n": 0}
+        captured = []
+        searches = []
+
+        async def fake_search(query, items, chosen_pid, providers):
+            searches.append(query)
+            return f"RES:{query}"
+
+        kb._execute_search = fake_search
+        kb._SEARCH_CACHE.clear()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST" and request.url.path.endswith("/v1/responses"):
+                idx = n["n"]
+                n["n"] += 1
+                if idx > 0:
+                    captured.append(json.loads(request.content.decode("utf-8")))
+                return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                      content=responses[min(idx, len(responses) - 1)])
+            return httpx.Response(404, content=b"{}")
+
+        body = req_body("深度调研问题")
+        body["tools"] = [
+            {"type": "web_search"},
+            {"type": "function", "name": "exec_command", "description": "exec",
+             "parameters": {"type": "object", "properties": {}}},
+        ]
+        r = await run_case(handler, body)
+        check("S9 HTTP 200", r.status_code == 200)
+        events = parse_sse(r.text)
+        ws_done = [d for _, d in events
+                   if d.get("type") == "response.output_item.done"
+                   and (d.get("item") or {}).get("type") == "web_search_call"]
+        comp = [d for _, d in events if d.get("type") == "response.completed"]
+        msg_done = [d for _, d in events
+                    if d.get("type") == "response.output_item.done"
+                    and (d.get("item") or {}).get("id") == "msg_final"]
+
+        check("S9[17a] exactly 4 upstream calls (initial + 3 follow-ups)", n["n"] == 4)
+        check("S9[17b] every search really executed (no fake done)",
+              len(searches) == 3 and len(ws_done) == 3
+              and [d["item"].get("call_id") for d in ws_done] == ["fc_w1", "fc_w2", "fc_w3"]
+              and [(d["item"].get("action") or {}).get("query") for d in ws_done] == ["q1", "q2", "q3"])
+        last_fu = captured[-1] if captured else {}
+        final_tools = [t.get("name") for t in (last_fu.get("tools") or [])
+                       if isinstance(t, dict)]
+        last_in = last_fu.get("input") or []
+        wrapup = any(isinstance(it, dict) and it.get("type") == "message"
+                     and "Search round budget (3) is exhausted" in json.dumps(
+                         it.get("content"), ensure_ascii=False)
+                     for it in last_in)
+        check("S9[17c] final follow-up drops web_search but keeps other tools",
+              len(captured) == 3 and "web_search" not in final_tools
+              and "exec_command" in final_tools)
+        check("S9[17d] final follow-up carries wrap-up instruction", wrapup)
+        check("S9[17e] wrap-up text arrives and completes cleanly",
+              bool(msg_done) and len(comp) == 1
+              and comp[0].get("type") == "response.completed"
+              and [it.get("type") for it in (comp[0].get("response") or {}).get("output", [])]
+              == ["web_search_call", "web_search_call", "web_search_call", "message"])
+    finally:
+        kb.SEARCH_CONT_MAX = old_max
+
+
 async def main():
     await s1_two_round()
     await s2_empty_query_fallback()
@@ -561,6 +733,9 @@ async def main():
     await s4_mixed_tools_no_cont()
     await s5_followup_failure()
     await s6_roundtrip_fulfill_compat()
+    await s7_rollout_shape_fulfill()
+    await s8_delegation_fallback_and_warning()
+    await s9_final_round_wrapup()
 
     failed = 0
     for name, ok in CHECKS:

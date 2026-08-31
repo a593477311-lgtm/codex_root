@@ -36,6 +36,7 @@ Log:      kimi_bridge.log next to this script
 import json
 import logging
 import os
+import re
 
 import sys
 import time
@@ -322,6 +323,16 @@ def normalize_input_item(item):
         args = item.get("arguments")
         if args is None and "input" in item:
             args = {"input": item["input"]}
+        if args is None:
+            # The Codex app records web_search_call as {id, status,
+            # action:{query}} with no call_id/arguments — recover the query
+            # from action so fulfill_web_searches can re-execute the exact
+            # original search (delegated threads have no usable fallback).
+            action = item.get("action")
+            if isinstance(action, dict) and action.get("type") == "search":
+                aq = action.get("query")
+                if isinstance(aq, str) and aq.strip():
+                    args = {"query": aq}
         log.info("  convert input '%s' -> function_call '%s'", ty, item.get("name") or ty[:-5])
         out = [{
             "type": "function_call",
@@ -525,6 +536,20 @@ def _extract_call_query(arguments) -> str:
     return str(a.get("query") or a.get("input") or "")
 
 
+_DELEGATION_INPUT_RE = re.compile(
+    r"<codex_delegation\b.*?<input>(.*?)</input>", re.DOTALL | re.IGNORECASE
+)
+
+
+def _extract_delegation_text(text: str) -> str:
+    """Best-effort recovery of the delegated task text from a
+    <codex_delegation> wrapper. Delegated threads have no plain user
+    message — without this, their only user message starts with '<' and
+    _fallback_query would skip it entirely (2026-08-31 incident)."""
+    m = _DELEGATION_INPUT_RE.search(text or "")
+    return m.group(1).strip() if m else (text or "")
+
+
 def _fallback_query(items) -> str:
     """空查询兜底：取最近一条有实质内容的用户消息——跳过"继续/好"这类
     推进指令；剥掉 app 的 environment_context 包装，只留 ## My request: 正文。"""
@@ -544,6 +569,8 @@ def _fallback_query(items) -> str:
         cand = cand.strip()
         if "## My request:" in cand:
             cand = cand.split("## My request:", 1)[1].strip()
+        if cand.startswith("<codex_delegation"):
+            cand = _extract_delegation_text(cand)
         if not cand or cand.startswith("<"):
             continue
         if not last_any:
@@ -562,6 +589,8 @@ async def _execute_search(query, items, chosen_pid, providers):
         if q:
             log.info("  web_search: empty query, fallback to last user msg (%r)", q[:60])
     if not q:
+        log.warning("web_search: no usable query (call noted, not executed)")
+        stats.note_event("web_search_no_query", "empty query and no fallback")
         return note
     chain = []
     for pid in (chosen_pid, *SEARCH_CAPABLE):
@@ -778,7 +807,7 @@ class SseRewriter:
 # --- search continuation：服务端语义的 web_search 续轮 -------------------------
 # 上游响应若以 web_search 调用结尾，桥自己执行搜索、把"带结果的追问"流式拼进
 # 同一条客户端响应——对齐官方 Codex 的服务端工具语义，轮次不再"断"在搜索上。
-SEARCH_CONT_MAX = 3  # 单次请求最多连续搜索轮数（防模型反复搜索打转）
+SEARCH_CONT_MAX = 8  # cap serial search rounds; the final follow-up drops web_search and injects a wrap-up instruction
 
 
 def _parse_sse_block(lines):
@@ -1038,6 +1067,7 @@ async def proxy(path: str, request: Request):
             model_seen = None
             last_raw_out = []
             rounds = 0
+            stop_reason = None  # max_rounds / followup_connect_failed / followup_http_error
             search_dones = []  # 各轮暂存的 web_search done 帧（gen 级汇总，兜底不丢）
 
             def _flush_ws_dones(call_id=None, query=None):
@@ -1096,8 +1126,14 @@ async def proxy(path: str, request: Request):
                     # —— 搜索续轮判定：本轮 output 里的工具调用全是 web_search 才续 ——
                     pending_ws = [it for it in last_raw_out
                                   if isinstance(it, dict) and it.get("type") == "function_call"]
-                    if not (pending_ws and all(it.get("name") == "web_search" for it in pending_ws)
-                            and body_obj and chosen_pid and rounds < SEARCH_CONT_MAX):
+                    all_ws = bool(pending_ws) and all(it.get("name") == "web_search" for it in pending_ws)
+                    if not (all_ws and body_obj and chosen_pid):
+                        break
+                    if rounds >= SEARCH_CONT_MAX:
+                        # Defensive: the final follow-up should have dropped
+                        # web_search from tools, so a new search here means the
+                        # model forced one anyway. Never continue past the cap.
+                        stop_reason = "max_rounds"
                         break
                     rounds += 1
                     for it in pending_ws:
@@ -1117,15 +1153,33 @@ async def proxy(path: str, request: Request):
                     fbody = dict(body_obj)
                     fbody["input"] = list(body_obj.get("input") or []) + cont_items
                     fbody["stream"] = True
+                    if rounds >= SEARCH_CONT_MAX:
+                        # Final round: the client never auto-continues after a
+                        # pure web_search ending, so instead of silently
+                        # dropping further searches (fake "completed"), remove
+                        # the tool and instruct the model to wrap up with the
+                        # evidence already collected.
+                        fbody["tools"] = [t for t in (fbody.get("tools") or [])
+                                          if not (isinstance(t, dict) and t.get("name") == "web_search")]
+                        fbody["input"].append({
+                            "type": "message", "role": "user",
+                            "content": [{"type": "input_text",
+                                         "text": f"[bridge] Search round budget ({SEARCH_CONT_MAX}) is exhausted. "
+                                                 f"Write your final answer using the search results already collected above. "
+                                                 f"Do not attempt further web searches."}],
+                        })
+                        log.info("  cont: final round %d — web_search removed from tools, wrap-up instruction injected", rounds)
                     try:
                         freq = client.build_request("POST", url, json=fbody, headers=headers)
                         new_resp = await client.send(freq, stream=True)
                     except Exception as e:
                         log.warning("  cont follow-up connect failed: %s", e)
+                        stop_reason = "followup_connect_failed"
                         break
                     if new_resp.status_code != 200 or "text/event-stream" not in new_resp.headers.get("content-type", ""):
                         log.warning("  cont follow-up HTTP %s", new_resp.status_code)
                         await new_resp.aclose()
+                        stop_reason = "followup_http_error"
                         break
                     prev = rewriter
                     rewriter = SseRewriter()
@@ -1137,6 +1191,9 @@ async def proxy(path: str, request: Request):
 
                 # 兜底：所有退出路径（混合工具不续轮/SEARCH_CONT_MAX 用尽/follow-up 失败）
                 # 在合并 completed 前清空暂存的 done 帧，保证条目不会永远挂在 in_progress。
+                if search_dones and stop_reason in ("max_rounds", "followup_connect_failed", "followup_http_error"):
+                    log.warning("  flushing %d web_search done(s) WITHOUT execution (reason=%s)",
+                                len(search_dones), stop_reason)
                 for chunk in _flush_ws_dones():
                     yield chunk
                 # 流结束：发出合并后的 response.completed（含各轮 output 与用量）
