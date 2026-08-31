@@ -42,8 +42,7 @@ h1 .em{background:linear-gradient(120deg,var(--v2),#c084fc);-webkit-background-c
 .dcard:hover{transform:translateY(-2px);border-color:#3d3c4c}
 .dcard::after{content:"";position:absolute;right:-22px;top:-22px;width:74px;height:74px;border-radius:50%;background:var(--tint,#8b6cf7);opacity:.1;pointer-events:none}
 .dcard .lbl{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
-.bal-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
-@media(max-width:900px){.bal-grid{grid-template-columns:1fr}}
+.bal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
 .bcard{background:linear-gradient(160deg,#1d1b26 0%,#232130 70%);border:1px solid var(--border);border-radius:14px;padding:15px 17px;position:relative;overflow:hidden;transition:transform var(--dur-2),border-color var(--dur-2)}
 .bcard:hover{transform:translateY(-2px);border-color:#3d3c4c}
 .bcard::after{content:"";position:absolute;right:-24px;top:-24px;width:80px;height:80px;border-radius:50%;background:var(--btint,#8b6cf7);opacity:.12;pointer-events:none}
@@ -51,7 +50,9 @@ h1 .em{background:linear-gradient(120deg,var(--v2),#c084fc);-webkit-background-c
 .bcard .bdot{width:10px;height:10px;border-radius:3px;background:var(--btint,#8b6cf7);box-shadow:0 0 10px var(--btint,#8b6cf7)}
 .bcard .blogo{width:22px;height:22px;border-radius:6px;flex:none;box-shadow:0 2px 8px rgba(0,0,0,.35)}
 .bcard .bname{font-weight:700;font-size:14px}
-.bcard .blevel{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--border);color:var(--sub)}
+.bcard .blevel{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--border);color:var(--sub);white-space:nowrap}
+.bcard.is-current{border-color:rgba(56,189,248,.35);box-shadow:0 0 16px rgba(56,189,248,.08)}
+.bcard.is-current .blevel{border-color:rgba(56,189,248,.4);color:#38bdf8;background:rgba(56,189,248,.08)}
 .bcard .bwin{margin:10px 0}
 .bcard .bwin .row1{display:flex;justify-content:space-between;font-size:12px;color:var(--sub);margin-bottom:5px}
 .bcard .bwin .row1 b{color:#e8e6f0;font-weight:600}
@@ -180,7 +181,7 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
 <div id="page-dash">
   <div class="cards" id="statCards"><div class="skel" style="grid-column:1/-1"></div></div>
   <div class="panel">
-    <h3>Coding Plan 余额<span class="right">Kimi · 智谱 · MiniMax 订阅额度与重置倒计时</span></h3>
+    <h3>Coding Plan 余额<span class="right">Gemini · Kimi · 智谱 · MiniMax 订阅额度与重置倒计时</span></h3>
     <div class="bal-grid" id="balanceCards"><div class="skel" style="height:120px"></div><div class="skel" style="height:120px"></div><div class="skel" style="height:120px"></div></div>
   </div>
   <div class="panel"><h3>Token 趋势<span class="right">按天 · 分模型 · 悬停查看明细</span></h3><div class="svgwrap" id="trend"></div><div class="legend" id="trendLegend" style="flex-direction:row;gap:18px;margin-top:10px;flex-wrap:wrap"></div></div>
@@ -1020,7 +1021,7 @@ async function deleteCurrentProvider(){
   }
 }
 
-const BAL_TINT={kimi:"#8b6cf7",zhipu:"#38bdf8",minimax:"#f87171"};
+const BAL_TINT={kimi:"#8b6cf7",zhipu:"#38bdf8",minimax:"#f87171",gemini:"#38bdf8"};
 let balFirst=true;
 function fmtReset(ms){
   if(!ms)return"";
@@ -1035,18 +1036,21 @@ function barColor(p){return p==null?"#8b6cf7":p>=85?"#f87171":p>=60?"#facc15":"#
 function renderBalance(d){
   const wrap=$("#balanceCards");if(!d||!d.providers){wrap.innerHTML='<div class="skel" style="grid-column:1/-1;height:60px"></div>';return}
   wrap.innerHTML=d.providers.map(p=>{
-    const tint=BAL_TINT[p.id]||"#8b6cf7";
-    if(!p.ok)return`<div class="bcard" style="--btint:${tint}"><div class="bhead">${vendorImg(p.id,"blogo")||'<i class="bdot"></i>'}<span class="bname">${p.name}</span></div><div class="berr">查询失败：${p.error||"未知错误"}</div></div>`;
+    const vKey=p.vendor||vendorOf(p.id,"");
+    const tint=BAL_TINT[vKey]||BAL_TINT[p.id]||"#8b6cf7";
+    const isCurr=!!p.is_current;
+    if(!p.ok)return`<div class="bcard${isCurr?" is-current":""}" style="--btint:${tint}"><div class="bhead">${vendorImg(vKey,"blogo")||'<i class="bdot"></i>'}<span class="bname">${p.name}</span>${p.level?`<span class="blevel">${p.level}</span>`:""}</div><div class="berr">查询失败：${p.error||"未知错误"}</div></div>`;
     const wins=(p.windows||[]).map(w=>{
       const pct=w.used_pct!=null?Math.max(0,Math.min(100,w.used_pct)):null;
-      const cnt=(w.total!=null)?`${fmtCount(w.used)} / ${fmtCount(w.total)}`:(pct!=null?`已用 ${pct}%`:"");
+      const remPct=w.remaining!=null?w.remaining:(pct!=null?(100-pct).toFixed(1):null);
+      const cnt=(w.total!=null)?`${fmtCount(w.used)} / ${fmtCount(w.total)}`:(remPct!=null?`剩余 ${remPct}%`:"");
       return`<div class="bwin">
         <div class="row1"><span>${w.label}</span><b>${cnt}</b></div>
         <div class="bbar"><i data-w="${pct??100}" style="width:0;background:${barColor(pct)}"></i></div>
         <div class="row2"><span>${pct!=null?`已用 ${pct}%`:""}</span><span>${fmtReset(w.reset_ms)}</span></div>
       </div>`}).join("");
-    return`<div class="bcard" style="--btint:${tint}">
-      <div class="bhead">${vendorImg(p.id,"blogo")||'<i class="bdot"></i>'}<span class="bname">${p.name}</span>${p.level?`<span class="blevel">${p.level}</span>`:""}</div>
+    return`<div class="bcard${isCurr?" is-current":""}" style="--btint:${tint}">
+      <div class="bhead">${vendorImg(vKey,"blogo")||'<i class="bdot"></i>'}<span class="bname">${p.name}</span>${p.level?`<span class="blevel">${p.level}</span>`:""}</div>
       ${wins||'<div class="berr">无窗口数据</div>'}
       <div class="bstale">${d.cached?"缓存":"已刷新"} · ${new Date(d.fetched_at).toLocaleTimeString()}</div>
     </div>`}).join("");

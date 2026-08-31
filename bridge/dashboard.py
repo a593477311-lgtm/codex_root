@@ -649,6 +649,66 @@ async def _fetch_minimax_balance(client, key):
         "reset_ms": now_ms + int(gen.get("weekly_remains_time") or 0),
     })
     return {"level": None, "windows": windows}
+async def _fetch_antigravity_gemini_balance(client: httpx.AsyncClient):
+    gui_config_path = os.path.expanduser("~/.antigravity_tools/gui_config.json")
+    if not os.path.exists(gui_config_path):
+        return []
+    try:
+        with open(gui_config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        proxy_port = cfg.get("proxy", {}).get("port", 8044)
+        api_key = cfg.get("proxy", {}).get("api_key", "")
+    except Exception:
+        return []
+
+    try:
+        r = await client.get(
+            f"http://127.0.0.1:{proxy_port}/api/accounts",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=5.0
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        return [{"id": "gemini_local", "vendor": "gemini", "name": "Gemini (Antigravity)", "ok": False, "error": f"连接代理失败: {e}"}]
+
+    accounts = data.get("accounts", [])
+    curr_id = data.get("current_account_id")
+    res = []
+    for acc in accounts:
+        acc_id = acc.get("id")
+        email = acc.get("email", "unknown")
+        is_curr = bool(acc.get("is_current") or (curr_id and acc_id == curr_id))
+        prefix = email.split("@")[0]
+        name = f"Gemini ({prefix})"
+        tier = (acc.get("quota") or {}).get("subscription_tier") or "Google AI Pro"
+        level = f"{tier} · 当前" if is_curr else tier
+
+        windows = []
+        quota_groups = (acc.get("quota") or {}).get("quota_groups") or []
+        gemini_group = next((g for g in quota_groups if "gemini" in (g.get("display_name") or "").lower()), None)
+        if gemini_group:
+            for b in gemini_group.get("buckets") or []:
+                win = b.get("window", "")
+                frac = b.get("remaining_fraction")
+                rem_pct = round(frac * 100, 1) if frac is not None else None
+                used_pct = round((1 - frac) * 100, 1) if frac is not None else None
+                label = "5 小时窗口" if "5h" in win.lower() else ("周配额" if "week" in win.lower() else win)
+                reset_ms = _iso_to_ms(b.get("reset_time"))
+                windows.append({
+                    "label": label,
+                    "used": None,
+                    "total": None,
+                    "remaining": rem_pct,
+                    "used_pct": used_pct,
+                    "reset_ms": reset_ms,
+                })
+        windows.sort(key=lambda w: 0 if "5" in w["label"] else 1)
+        res.append({"id": f"gemini_{prefix}", "vendor": "gemini", "name": name, "email": email, "is_current": is_curr, "level": level, "ok": True, "windows": windows})
+    res.sort(key=lambda a: 0 if a.get("is_current") else 1)
+    return res
+
+
 
 
 async def _fetch_one(client, pid, name, key):
@@ -676,12 +736,20 @@ async def api_balance(refresh: bool = False):
     cfg = load_config()
     providers = cfg.get("providers", {})
     wanted = [("kimi", "Kimi For Coding"), ("zhipu", "智谱 BigModel"), ("minimax", "MiniMax")]
+    
     async with httpx.AsyncClient(timeout=15.0) as client:
-        results = await asyncio.gather(*[
+        fetches = [
             _fetch_one(client, pid, providers.get(pid, {}).get("name", name),
                        (providers.get(pid) or {}).get("key", ""))
             for pid, name in wanted
-        ])
-    data = {"fetched_at": int(now * 1000), "providers": list(results)}
+        ]
+        fetches.append(_fetch_antigravity_gemini_balance(client))
+        raw_results = await asyncio.gather(*fetches)
+
+    standard_results = list(raw_results[:-1])
+    gemini_accounts = raw_results[-1] or []
+    # Gemini 账号卡片放置在最前/并入
+    all_providers = list(gemini_accounts) + standard_results
+    data = {"fetched_at": int(now * 1000), "providers": all_providers}
     _BALANCE_CACHE.update(ts=now, data=data)
     return {**data, "cached": False}
