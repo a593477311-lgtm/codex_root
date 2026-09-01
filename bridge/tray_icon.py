@@ -34,6 +34,7 @@ WM_RBUTTONUP = 0x0205
 WM_CLOSE = 0x0010
 
 NIM_ADD = 0
+NIM_MODIFY = 1
 NIM_DELETE = 2
 NIF_MESSAGE = 0x01
 NIF_ICON = 0x02
@@ -97,6 +98,7 @@ class _MSG(ctypes.Structure):
 
 
 _DLLS = None
+_NID = None
 
 
 def _dlls():
@@ -168,6 +170,19 @@ def start(icon_path, tooltip, url):
         t.start()
     except Exception as e:  # pragma: no cover
         log.warning("tray icon thread failed to start: %s", e)
+
+
+def update_tooltip(text):
+    """Refresh the tray hover tooltip (NIM_MODIFY); safe from any thread."""
+    nid = _NID
+    if nid is None:
+        return
+    try:
+        _, shell32, _ = _dlls()
+        nid.szTip = str(text).replace("\r", "")[:127]
+        shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid))
+    except Exception as e:
+        log.debug("tooltip update failed: %s", e)
 
 
 def _route_label():
@@ -314,6 +329,8 @@ def _run(icon_path, tooltip, url):
         nid.szTip = tooltip[:127]
         if not shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid)):
             raise OSError("Shell_NotifyIconW failed")
+        global _NID
+        _NID = nid
 
         msg = _MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:

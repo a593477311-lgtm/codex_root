@@ -40,6 +40,7 @@ import re
 
 import sys
 import time
+import threading
 
 import httpx
 import uvicorn
@@ -1301,6 +1302,39 @@ if __name__ == "__main__":
                          "assets", "bridge.ico"),
             f"Codex Bridge :{PORT}",
             f"http://{HOST}:{PORT}/dashboard")
+        tray_ok = True
     except Exception as _e:
+        tray_ok = False
         log.warning("tray icon not started: %s", _e)
+
+    def _cn_num(n):
+        n = int(n or 0)
+        if n >= 100000000:
+            return ("%.2f" % (n / 100000000)).rstrip("0").rstrip(".") + "亿"
+        if n >= 10000:
+            return "%.0f万" % (n / 10000)
+        return str(n)
+
+    def _tray_tooltip_worker():
+        # Hover tooltip shows today's usage; refresh every 60s so the icon
+        # never shows a stale line.
+        while True:
+            try:
+                rows = stats.models(1) or []
+                tot = sum(int(r.get("tokens_total") or 0) for r in rows)
+                req = sum(int(r.get("requests") or 0) for r in rows)
+                parts = ["Codex Bridge :{}".format(PORT),
+                         "今日 {} tokens · {} 次".format(_cn_num(tot), req)]
+                if rows and tot:
+                    top = rows[0]  # bridge_stats.models sorts by tokens desc
+                    parts.append("{} {}%".format(top.get("model", "?"),
+                                                  round(100.0 * (top.get("tokens_total") or 0) / tot)))
+                tray_icon.update_tooltip("\n".join(parts))
+            except Exception as _e:
+                log.debug("tray tooltip refresh failed: %s", _e)
+            time.sleep(60)
+
+    if tray_ok:
+        threading.Thread(target=_tray_tooltip_worker, daemon=True,
+                         name="tray-tooltip").start()
     uvicorn.run(app, host=HOST, port=PORT, log_config=None)

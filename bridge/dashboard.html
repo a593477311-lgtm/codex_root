@@ -188,7 +188,7 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
   <div class="panel"><h3>Token 趋势<span class="right">按天 · 分模型 · 悬停查看明细</span></h3><div class="svgwrap" id="trend"></div><div class="legend" id="trendLegend" style="flex-direction:row;gap:18px;margin-top:10px;flex-wrap:wrap"></div></div>
   <div class="split">
     <div class="panel"><h3>活跃热力图<span class="right">最近 10 周</span></h3><div class="svgwrap" id="heatmap"></div></div>
-    <div class="panel"><h3>模型用量</h3><div style="display:flex;gap:18px;align-items:center"><div id="donut"></div><div class="legend" id="modelLegend" style="flex:1"></div></div></div>
+    <div class="panel"><h3 style="display:flex;align-items:center;justify-content:space-between">模型用量<span class="seg" id="donutRange"><button data-d="1" class="on">当日</button><button data-d="7">7天</button><button data-d="30">30天</button></span></h3><div style="display:flex;gap:18px;align-items:center"><div id="donut"></div><div class="legend" id="modelLegend" style="flex:1"></div></div></div>
   </div>
   <div class="panel"><h3>Token 构成</h3><div id="compose" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px"></div></div>
   <div class="panel"><h3>调用明细<span class="right" id="reqFilterWrap"><select class="mf" id="modelFilter" onchange="renderTable(lastRows)"><option value="">全部模型</option></select></span></h3><div style="overflow-x:auto"><table id="reqTable"><thead><tr><th>时间</th><th>耗时</th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存率</th><th>模型</th><th>状态</th></tr></thead><tbody></tbody></table></div></div>
@@ -483,7 +483,7 @@ function renderHeat(daily){
   $("#heatSvg").addEventListener("mouseleave",hideTip);
 }
 
-function renderDonut(models){
+function renderDonut(models,animate){
   models=models.filter(m=>m.model!=="?");
   const total=models.reduce((a,m)=>a+m.tokens_total,0)||1;
   const R=58,C=2*Math.PI*R;let off=0,svg="",legend="";
@@ -493,11 +493,17 @@ function renderDonut(models){
   $("#donut").innerHTML=`<svg width="176" height="176" viewBox="0 0 176 176">${svg}<text x="88" y="84" text-anchor="middle" fill="#e8e7ed" font-size="17" font-weight="800">${fmt(total)}</text><text x="88" y="102" text-anchor="middle" fill="#63626e" font-size="10.5">tokens</text></svg>`;
   $("#modelLegend").innerHTML=legend||`<span style="color:var(--faint);font-size:12px">暂无数据</span>`;
   const segs=[...$("#donut").querySelectorAll(".dseg")],rows=[...$("#modelLegend").querySelectorAll(".row")];
-  if(pendingAnim)gsap.from(segs,{strokeDashoffset:2*Math.PI*58,duration:0.9,stagger:0.1,ease:"power2.inOut",clearProps:"strokeDashoffset"});
+  if(animate||pendingAnim)gsap.from(segs,{strokeDashoffset:2*Math.PI*58,duration:0.9,stagger:0.1,ease:"power2.inOut",clearProps:"strokeDashoffset"});
   function hl(i,on){segs.forEach((s,j)=>{s.style.strokeWidth=on&&i===j?26:21;s.style.opacity=on&&i!==j?0.3:1});rows.forEach((r,j)=>r.classList.toggle("hl",on&&i===j))}
   segs.forEach(s=>{s.addEventListener("mouseenter",()=>hl(+s.dataset.i,true));s.addEventListener("mouseleave",()=>hl(0,false))});
   rows.forEach(r=>{r.addEventListener("mouseenter",()=>hl(+r.dataset.i,true));r.addEventListener("mouseleave",()=>hl(0,false))});
 }
+
+let donutDays=1;
+async function loadDonut(animate){
+  try{renderDonut(await api(`/dashboard/api/models?days=${donutDays}`),animate)}catch(e){}
+}
+document.querySelectorAll("#donutRange button").forEach(b=>b.addEventListener("click",()=>{donutDays=+b.dataset.d;document.querySelectorAll("#donutRange button").forEach(x=>x.classList.toggle("on",x===b));loadDonut(true)}));
 
 function renderCompose(s){
   const rows=[["输入（非缓存）",Math.max(0,s.tokens_in-s.tokens_cached),"#8b6cf7"],["缓存读取",s.tokens_cached,"#2bc8e6"],["输出（非推理）",Math.max(0,s.tokens_out-s.tokens_reasoning),"#39d353"],["推理输出",s.tokens_reasoning,"#f5a623"]];
@@ -524,15 +530,14 @@ function renderTable(rows){
 {const dp=$("#datePick");dp.max=dayKey(new Date());const dm=new Date();dm.setDate(dm.getDate()-30);dp.min=dayKey(dm)}
 async function loadDash(){
   try{
-    const [s,s2,daily,daily10w,models,reqs]=await Promise.all([
+    const [s,s2,daily,daily10w,reqs]=await Promise.all([
       api(`/dashboard/api/summary?${picked?`date=${picked}`:`days=${days}`}`),
       api(`/dashboard/api/summary?${picked?`date=${prevDay(picked)}`:`days=${days*2}`}`),
       api(`/dashboard/api/daily?${picked?`date=${picked}`:`days=${days}`}`),
       api(`/dashboard/api/daily?days=70`),
-      api(`/dashboard/api/models?${picked?`date=${picked}`:`days=${days}`}`),
       api("/dashboard/api/requests?limit=50")]);
     const prev=s2?(picked?{tokens_total:s2.tokens_total||null,requests:s2.requests||null,cache_hit_rate:null,errors:s2.errors||null}:{tokens_total:(s2.tokens_total-s.tokens_total)||null,requests:(s2.requests-s.requests)||null,cache_hit_rate:null,errors:(s2.errors-s.errors)||null}):null;
-    renderCards(s,prev);if(balAnimPending&&lastBal)renderBalance(lastBal);balAnimPending=false;renderTrend(daily);renderHeat(daily10w);renderDonut(models);renderCompose(s);lastRows=reqs;renderTable(reqs);
+    renderCards(s,prev);if(balAnimPending&&lastBal)renderBalance(lastBal);balAnimPending=false;renderTrend(daily);renderHeat(daily10w);renderCompose(s);lastRows=reqs;renderTable(reqs);
     $("#liveDot").className="";$("#liveText").textContent="上游正常";pendingAnim=false;
   }catch(e){$("#liveDot").className="bad";$("#liveText").textContent="数据加载失败";toast("加载失败: "+e.message,true)}
 }
@@ -1058,6 +1063,7 @@ async function loadBalance(force){
 
 // 页面初始化
 loadDash();
+loadDonut(true);
 // bal_refresh=1：托盘「一键刷新配额」入口，穿透服务端 60s 缓存
 if(new URLSearchParams(location.search).get("bal_refresh")==="1")loadBalance(true);else loadBalance();
 loadHealth();
