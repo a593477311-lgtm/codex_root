@@ -387,7 +387,7 @@ function fmtLat(ms){if(ms>=60000)return(ms/60000).toFixed(1)+"min";if(ms>=1000)r
 function toast(msg,bad){const t=$("#toast");t.textContent=msg;t.style.background=bad?"#5a2626":"#2c2b38";t.style.display="block";clearTimeout(t._h);t._h=setTimeout(()=>t.style.display="none",2600)}
 async function api(p){const r=await fetch(p);if(!r.ok)throw new Error(p+" "+r.status);return r.json()}
 function showTab(t){["dash","events","settings"].forEach(x=>{$("#page-"+x).classList.toggle("hidden",x!==t);$("#tab-"+x).classList.toggle("on",x===t)});if(t==="events")loadEvents();if(t==="settings"){loadCfg();loadHealth();loadNs();loadLog();loadProviders();}}
-function setDays(d){picked=null;days=d;pendingAnim=true;const dp=$("#datePick");dp.value="";dp.classList.remove("on");document.querySelectorAll("#rangeSel button").forEach(b=>b.classList.toggle("on",+b.dataset.d===d));loadDash()}
+function setDays(d){picked=null;days=d;pendingAnim=true;balAnimPending=true;const dp=$("#datePick");dp.value="";dp.classList.remove("on");document.querySelectorAll("#rangeSel button").forEach(b=>b.classList.toggle("on",+b.dataset.d===d));loadDash()}
 
 const tip=$("#tip");
 function showTip(html,x,y){tip.innerHTML=html;tip.style.display="block";const w=tip.offsetWidth,h=tip.offsetHeight;let L=x+14,T=y+14;if(L+w>innerWidth-10)L=x-w-14;if(T+h>innerHeight-10)T=y-h-14;tip.style.left=L+"px";tip.style.top=T+"px"}
@@ -419,7 +419,7 @@ function renderCards(s,prev){
 }
 
 function dayKey(d){return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
-function setPick(v){if(!v)return;picked=v;days=1;pendingAnim=true;document.querySelectorAll("#rangeSel button").forEach(b=>b.classList.remove("on"));$("#datePick").classList.add("on");loadDash()}
+function setPick(v){if(!v)return;picked=v;days=1;pendingAnim=true;balAnimPending=true;document.querySelectorAll("#rangeSel button").forEach(b=>b.classList.remove("on"));$("#datePick").classList.add("on");loadDash()}
 function prevDay(ds){const d=new Date(ds+"T00:00:00");d.setDate(d.getDate()-1);return dayKey(d)}
 function lastN(n,end){const t=end?new Date(end+"T00:00:00"):new Date();t.setHours(0,0,0,0);const a=[];for(let i=n-1;i>=0;i--)a.push(new Date(+t-i*864e5));return a}
 
@@ -531,7 +531,7 @@ async function loadDash(){
       api(`/dashboard/api/models?${picked?`date=${picked}`:`days=${days}`}`),
       api("/dashboard/api/requests?limit=50")]);
     const prev=s2?(picked?{tokens_total:s2.tokens_total||null,requests:s2.requests||null,cache_hit_rate:null,errors:s2.errors||null}:{tokens_total:(s2.tokens_total-s.tokens_total)||null,requests:(s2.requests-s.requests)||null,cache_hit_rate:null,errors:(s2.errors-s.errors)||null}):null;
-    renderCards(s,prev);renderTrend(daily);renderHeat(daily10w);renderDonut(models);renderCompose(s);lastRows=reqs;renderTable(reqs);
+    renderCards(s,prev);if(balAnimPending&&lastBal)renderBalance(lastBal);balAnimPending=false;renderTrend(daily);renderHeat(daily10w);renderDonut(models);renderCompose(s);lastRows=reqs;renderTable(reqs);
     $("#liveDot").className="";$("#liveText").textContent="上游正常";pendingAnim=false;
   }catch(e){$("#liveDot").className="bad";$("#liveText").textContent="数据加载失败";toast("加载失败: "+e.message,true)}
 }
@@ -1022,7 +1022,7 @@ async function deleteCurrentProvider(){
 }
 
 const BAL_TINT={kimi:"#8b6cf7",zhipu:"#38bdf8",minimax:"#f87171",gemini:"#38bdf8"};
-let balFirst=true;
+let balFirst=true,lastBal=null,balAnimPending=false;
 function fmtReset(ms){
   if(!ms)return"";
   const d=ms-Date.now();if(d<=0)return"即将重置";
@@ -1055,10 +1055,10 @@ function renderBalance(d){
       <div class="bstale">${d.cached?"缓存":"已刷新"} · ${new Date(d.fetched_at).toLocaleTimeString()}</div>
     </div>`}).join("");
   requestAnimationFrame(()=>wrap.querySelectorAll(".bbar i").forEach(i=>i.style.width=i.dataset.w+"%"));
-  if(balFirst){balFirst=false;requestAnimationFrame(()=>gsap.from("#balanceCards .bcard",{y:14,autoAlpha:0,duration:.5,stagger:.07,ease:"power3.out",clearProps:"all"}))}
+  if(balFirst||balAnimPending){balFirst=false;requestAnimationFrame(()=>gsap.from("#balanceCards .bcard",{y:14,autoAlpha:0,duration:.5,stagger:.07,ease:"power3.out",clearProps:"all"}))}
 }
 async function loadBalance(){
-  try{const d=await api("/dashboard/api/balance");renderBalance(d)}
+  try{const d=await api("/dashboard/api/balance");lastBal=d;renderBalance(d)}
   catch(e){const wrap=$("#balanceCards");if(wrap)wrap.innerHTML=`<div class="skel" style="grid-column:1/-1;height:60px"></div>`}
 }
 
