@@ -425,13 +425,7 @@ def normalize_body(raw: bytes) -> bytes:
 # call is recorded but never executed, so repair_orphan_calls fills a note.
 # Here we upgrade those notes into REAL results by re-issuing the query against
 # a provider whose upstream natively executes {"type": "web_search"}.
-SEARCH_CAPABLE = ("zhipu", "kimi", "minimax")
-# 2026-08-29 四通道实测:
-#   zhipu  Responses web_search 自愿真搜，带来源链接
-#   kimi   Anthropic /v1/messages + web_search_20250305 server tool 真搜，单请求完成，带来源
-#   minimax Responses web_search 必须 tool_choice=required 强制才真搜（无来源列表）；
-#           不强制时 M3 会无视工具直接脑补（问"今天几号"答错 3 个月）
-#   gemini 本地代理路径无输出，不支持
+SEARCH_CAPABLE = ("gemini", "zhipu", "kimi", "minimax")
 _SEARCH_CACHE = {}                       # call_id -> final output text (results or note)
 
 # Responses 形状的按供应商额外载荷
@@ -441,6 +435,8 @@ NATIVE_SEARCH_EXTRA = {"minimax": {"tool_choice": "required"}}
 async def _native_search(pid, pinfo, query):
     if pid == "kimi":
         return await _native_search_kimi(pinfo, query)
+    if pid == "gemini":
+        return await _native_search_gemini(pinfo, query)
     up = (pinfo.get("upstream") or "").rstrip("/")
     key = pinfo.get("key")
     model = pinfo.get("active_model") or (pinfo.get("models") or [None])[0]
@@ -522,6 +518,57 @@ async def _native_search_kimi(pinfo, query):
         return text[:6000] if text else None
     except Exception as e:
         log.warning("kimi native search failed: %s", e)
+        return None
+
+
+async def _native_search_gemini(pinfo, query):
+    """Gemini via Antigravity local proxy (/v1/responses with web_search tool).
+    Antigravity wraps Google Search Grounding natively and returns grounding
+    citations & search summary text directly in message output."""
+    up = (pinfo.get("upstream") or "").rstrip("/")
+    key = pinfo.get("key")
+    model = pinfo.get("active_model") or (pinfo.get("models") or ["gemini-3.7-flash-high"])[0]
+    if not (up and query):
+        return None
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    payload = {
+        "model": model,
+        "input": [{"role": "user", "content": f"搜索并总结回答：{query}"}],
+        "tools": [{"type": "web_search"}],
+        "stream": False,
+    }
+    try:
+        r = await client.post(f"{up}/v1/responses", json=payload,
+                              headers=headers, timeout=60)
+        if r.status_code != 200:
+            log.warning("native search via gemini: HTTP %s", r.status_code)
+            return None
+        data = r.json()
+        parts = []
+        executed = False
+        for it in data.get("output") or []:
+            if it.get("type") == "web_search_call":
+                executed = True
+                act = it.get("action") or {}
+                srcs = [s.get("url") for s in (act.get("sources") or []) if isinstance(s, dict) and s.get("url")]
+                if srcs:
+                    parts.append("来源: " + ", ".join(srcs[:8]))
+            elif it.get("type") == "message":
+                for c in it.get("content") or []:
+                    if isinstance(c, dict) and c.get("text"):
+                        txt = c["text"]
+                        parts.append(txt)
+                        if "已为您搜索" in txt or "来源引文" in txt or "http" in txt:
+                            executed = True
+        if not executed and not parts:
+            log.warning("native search via gemini: no search output produced")
+            return None
+        text = "\n\n".join(parts).strip()
+        return text[:6000] if text else None
+    except Exception as e:
+        log.warning("native search via gemini failed: %s", e)
         return None
 
 

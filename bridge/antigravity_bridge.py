@@ -180,6 +180,9 @@ def collect_deferred_tools(inp) -> dict:
 def normalize_tool(t: dict) -> dict:
     """Keep the tool usable; only reshape what upstream rejects."""
     ty = t.get("type")
+    if ty == "web_search":
+        # Antigravity natively supports {"type": "web_search"} and maps it to Google Search Grounding
+        return t
     if ty == "function":
         _clean_tool_params(t, "tool")
         return t
