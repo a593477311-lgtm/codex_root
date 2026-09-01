@@ -56,6 +56,7 @@ LR_DEFAULTSIZE = 0x0040
 
 DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 MENU_OPEN = 1001
 MENU_QUIT = 1002
@@ -261,9 +262,20 @@ def _launch_restart():
         if os.path.exists(cand):
             py = cand
     try:
-        subprocess.Popen([py, RESTART_SCRIPT],
-                         creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                         close_fds=True)
+        # Break away when possible: some launch environments put the bridge in a
+        # job object which would otherwise kill the restarter together with the
+        # bridge.  The restarter itself only terminates the bridge PID now.
+        try:
+            subprocess.Popen(
+                [py, RESTART_SCRIPT],
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
+                CREATE_BREAKAWAY_FROM_JOB,
+                close_fds=True)
+        except OSError:
+            subprocess.Popen(
+                [py, RESTART_SCRIPT],
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                close_fds=True)
         log.info("bridge restart requested via %s", RESTART_SCRIPT)
     except Exception as e:
         log.warning("restart launch failed: %s", e)
