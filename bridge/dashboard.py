@@ -107,6 +107,14 @@ def asset(name: str):
 
 
 
+@router.get("/favicon.ico")
+def favicon():
+    p = os.path.join(ASSETS_DIR, "bridge.ico")
+    if os.path.isfile(p):
+        return FileResponse(p, media_type="image/x-icon")
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 def page():
     try:
