@@ -130,6 +130,19 @@ class _GdiplusStartupInput(ctypes.Structure):
                 ("SuppressExternalCodecs", ctypes.c_int)]
 
 
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", ctypes.c_uint), ("biWidth", ctypes.c_long),
+                ("biHeight", ctypes.c_long), ("biPlanes", ctypes.c_ushort),
+                ("biBitCount", ctypes.c_ushort), ("biCompression", ctypes.c_uint),
+                ("biSizeImage", ctypes.c_uint), ("biXPelsPerMeter", ctypes.c_long),
+                ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", ctypes.c_uint),
+                ("biClrImportant", ctypes.c_uint)]
+
+
+class _BITMAPINFO(ctypes.Structure):
+    _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", ctypes.c_uint * 3)]
+
+
 class _RECTF(ctypes.Structure):
     _fields_ = [("x", ctypes.c_float), ("y", ctypes.c_float),
                 ("width", ctypes.c_float), ("height", ctypes.c_float)]
@@ -244,6 +257,10 @@ def _dlls():
     gdi32.SelectObject.restype = ctypes.c_void_p
     gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
     gdi32.DeleteObject.restype = ctypes.c_int
+    gdi32.CreateDIBSection.argtypes = [ctypes.c_void_p, ctypes.POINTER(_BITMAPINFO),
+                                       ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p),
+                                       ctypes.c_void_p, ctypes.c_uint]
+    gdi32.CreateDIBSection.restype = ctypes.c_void_p
 
     # GDI+ object APIs.  All opaque handles stay c_void_p.
     gdiplus.GdiplusStartup.argtypes = [ctypes.POINTER(ctypes.c_void_p),
@@ -324,10 +341,8 @@ def _dlls():
                                        ctypes.c_void_p, ctypes.POINTER(_RECTF),
                                        ctypes.c_void_p, ctypes.c_void_p]
     gdiplus.GdipDrawString.restype = ctypes.c_int
-    gdiplus.GdipCreateHBITMAPFromBitmap.argtypes = [ctypes.c_void_p,
-                                                    ctypes.POINTER(ctypes.c_void_p),
-                                                    ctypes.c_uint]
-    gdiplus.GdipCreateHBITMAPFromBitmap.restype = ctypes.c_int
+    gdiplus.GdipFlush.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    gdiplus.GdipFlush.restype = ctypes.c_int
 
     _DLLS = (user32, kernel32, gdi32, gdiplus)
     return _DLLS
@@ -481,12 +496,14 @@ def _draw_card(gdiplus, graphics):
     formats = []
     path = None
     try:
-        bg = _Brush(gdiplus, _argb(0x14131A, 244))
+        # Fully opaque: semi-transparent tray cards become unreadable when the
+        # dashboard itself is underneath them.
+        bg = _Brush(gdiplus, _argb(0x17161F, 255))
         border = _Brush(gdiplus, _argb(0x2A2933, 255))
         ink = _Brush(gdiplus, _argb(0xE8E7ED))
         sub = _Brush(gdiplus, _argb(0x9A99A5))
         faint = _Brush(gdiplus, _argb(0x63626E))
-        bg_pen = _Pen(gdiplus, _argb(0x33323E), 1.0)
+        bg_pen = _Pen(gdiplus, _argb(0x55546A), 1.4)
         ring_pen = _Pen(gdiplus, _argb(0x26252E), 17.0)
         brushes = [bg, border, ink, sub, faint]
         pens = [bg_pen, ring_pen]
@@ -583,28 +600,57 @@ def _draw_card(gdiplus, graphics):
 
 
 def _paint_layered(hwnd):
-    """Render an ARGB bitmap and hand it to UpdateLayeredWindow."""
+    """Render directly into a premultiplied DIB for UpdateLayeredWindow."""
     user32, _kernel32, gdi32, gdiplus = _dlls()
     bitmap = ctypes.c_void_p()
     graphics = ctypes.c_void_p()
     hbitmap = ctypes.c_void_p()
+    bits = ctypes.c_void_p()
     hdc_mem = None
+    hdc_screen = None
     old = None
     try:
-        if gdiplus.GdipCreateBitmapFromScan0(W, H, 0, PIXEL_FORMAT_32BPP_ARGB,
-                                             None, ctypes.byref(bitmap)) != 0:
+        hdc_screen = user32.GetDC(hwnd)
+        hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
+        user32.ReleaseDC(hwnd, hdc_screen)
+        hdc_screen = None
+
+        bmi = _BITMAPINFO()
+        bmi.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = W
+        bmi.bmiHeader.biHeight = -H          # top-down
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 32
+        bmi.bmiHeader.biCompression = 0      # BI_RGB
+        hbitmap = gdi32.CreateDIBSection(hdc_mem, ctypes.byref(bmi), 0,
+                                         ctypes.byref(bits), None, 0)
+        if not hbitmap or not bits:
+            raise OSError("CreateDIBSection failed")
+
+        stride = W * 4
+        if gdiplus.GdipCreateBitmapFromScan0(W, H, stride, PIXEL_FORMAT_32BPP_ARGB,
+                                             bits, ctypes.byref(bitmap)) != 0:
             raise OSError("GdipCreateBitmapFromScan0 failed")
         if gdiplus.GdipGetImageGraphicsContext(bitmap, ctypes.byref(graphics)) != 0:
             raise OSError("GdipGetImageGraphicsContext failed")
         gdiplus.GdipSetSmoothingMode(graphics, SMOOTHING_ANTIALIAS)
         gdiplus.GdipSetTextRenderingHint(graphics, TEXT_ANTIALIAS_GRIDFIT)
         _draw_card(gdiplus, graphics)
-        if gdiplus.GdipCreateHBITMAPFromBitmap(bitmap, ctypes.byref(hbitmap), 0) != 0:
-            raise OSError("GdipCreateHBITMAPFromBitmap failed")
+        gdiplus.GdipFlush(graphics, 1)       # GdipFlushWorld
 
-        hdc_screen = user32.GetDC(hwnd)
-        hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
-        user32.ReleaseDC(hwnd, hdc_screen)
+        # GDI+ writes straight alpha; UpdateLayeredWindow requires premultiplied
+        # alpha.  GdipCreateHBITMAPFromBitmap does not preserve this reliably,
+        # which is why the card previously appeared to have no background.
+        pixels = ctypes.cast(bits, ctypes.POINTER(ctypes.c_ubyte))
+        nbytes = W * H * 4
+        for i in range(0, nbytes, 4):
+            alpha = pixels[i + 3]
+            if alpha == 255 or alpha == 0:
+                continue
+            pixels[i] = pixels[i] * alpha // 255
+            pixels[i + 1] = pixels[i + 1] * alpha // 255
+            pixels[i + 2] = pixels[i + 2] * alpha // 255
+
         old = gdi32.SelectObject(hdc_mem, hbitmap)
 
         dst = _POINT(_STATE.get("_x", 0), _STATE.get("_y", 0))
@@ -619,6 +665,13 @@ def _paint_layered(hwnd):
     finally:
         if old and hdc_mem:
             gdi32.SelectObject(hdc_mem, old)
+        if graphics:
+            gdiplus.GdipDeleteGraphics(graphics)
+            graphics = ctypes.c_void_p()
+        if bitmap:
+            # Must release the external DIB memory before selecting/deleting it.
+            gdiplus.GdipDisposeImage(bitmap)
+            bitmap = ctypes.c_void_p()
         if hdc_mem:
             gdi32.DeleteDC(hdc_mem)
         if hbitmap:
