@@ -170,17 +170,18 @@ def start(icon_path, tooltip, url):
         log.warning("tray icon thread failed to start: %s", e)
 
 
-def _provider_label():
+def _route_label():
     """Grayed status line, re-read from disk on every right-click."""
     try:
         with open(CONFIG_FILE, encoding="utf-8") as f:
             cfg = json.load(f)
+        providers = cfg.get("providers", {})
         pid = str(cfg.get("active_provider", "") or "")
-        name = (cfg.get("providers", {}).get(pid) or {}).get("name") or pid
-        return "当前供应商: " + (str(name) if name else "未知")
+        name = (providers.get(pid) or {}).get("name") or pid or "未知"
+        return "模型路由: 按模型自动分发(%d家) · 兜底 %s" % (len(providers), name)
     except Exception as e:
-        log.debug("provider label unavailable: %s", e)
-        return "当前供应商: 未知"
+        log.debug("route label unavailable: %s", e)
+        return "模型路由: 按模型自动分发 · 兜底未知"
 
 
 def _build_menu(user32):
@@ -188,7 +189,7 @@ def _build_menu(user32):
     m = user32.CreatePopupMenu()
     user32.AppendMenuW(m, MF_STRING | MF_DEFAULT, MENU_OPEN, "打开控制台")
     user32.AppendMenuW(m, MF_SEPARATOR, 0, None)
-    user32.AppendMenuW(m, MF_STRING | MF_GRAYED, 0, _provider_label())
+    user32.AppendMenuW(m, MF_STRING | MF_GRAYED, 0, _route_label())
     user32.AppendMenuW(m, MF_SEPARATOR, 0, None)
     user32.AppendMenuW(m, MF_STRING, MENU_REFRESH, "一键刷新配额")
     user32.AppendMenuW(m, MF_STRING, MENU_RESTART, "重启桥接服务")

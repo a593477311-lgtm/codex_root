@@ -230,7 +230,7 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
       <div id="providerCards" class="prov-grid"></div>
       
       <div class="field">
-        <label>生效模型 (Model)</label>
+        <label>默认模型（切换后写入 config.toml）</label>
         <div>
           <select id="pModelSelect" class="mf" style="width:100%;height:32px;font-size:12.5px" onchange="markDirty()"></select>
           <div class="hint">切换厂商时自动适配可用模型 (k3, gemini-3.7-flash, GLM-5.3-Flash, MiniMax-M3)</div>
@@ -726,17 +726,10 @@ function renderSettingCards(){
     },
     {
       t: "#8b6cf7",
-      img: "icon-uptime.png",
-      l: "当前生效渠道",
-      v: curP.name || pData.active_provider || "Kimi",
-      sub: (curP.upstream || "官方端点").replace(/^https?:\/\//, "")
-    },
-    {
-      t: "#2bc8e6",
       img: "icon-model.png",
-      l: "当前挂载模型",
-      v: pData.current_model || curP.active_model || "k3",
-      sub: "已同步至 models.json"
+      l: "模型路由",
+      v: "按模型自动分发",
+      sub: Object.keys(pList).length + " 供应商 · 兜底 " + (curP.name || pData.active_provider || "--") + " · 默认 " + (pData.current_model || "--") + " ← config.toml"
     },
     {
       t: "#f5a623",
