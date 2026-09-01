@@ -86,7 +86,7 @@ def _run(icon_path, tooltip, url):
         shell32 = ctypes.windll.shell32
         kernel32 = ctypes.windll.kernel32
 
-        shell32.SetCurrentProcessExplicitAppUserModelID("codex.kimibridge")
+        shell32.SetCurrentProcessExplicitAppUserModelID("codex.codexbridge")
 
         def wndproc(hwnd, msg, wp, lp):
             if msg == WM_APP:
@@ -116,12 +116,12 @@ def _run(icon_path, tooltip, url):
         cls = _WNDCLASSW()
         cls.lpfnWndProc = ctypes.cast(_run.proc, ctypes.c_void_p)
         cls.hInstance = h_inst
-        cls.lpszClassName = "KimiBridgeTray"
+        cls.lpszClassName = "CodexBridgeTray"
         if not user32.RegisterClassW(ctypes.byref(cls)):
             raise OSError("RegisterClassW failed")
 
         WS_OVERLAPPED = 0x00000000
-        hwnd = user32.CreateWindowExW(0, "KimiBridgeTray", "Kimi Bridge",
+        hwnd = user32.CreateWindowExW(0, "CodexBridgeTray", "Codex Bridge",
                                       WS_OVERLAPPED, 0, 0, 0, 0, None, None,
                                       h_inst, None)
         if not hwnd:

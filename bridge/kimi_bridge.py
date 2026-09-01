@@ -1293,13 +1293,13 @@ if __name__ == "__main__":
     # uvicorn from touching logging config (our file log is enough).
     sys.stdout = open(os.devnull, "w", encoding="utf-8")
     sys.stderr = open(os.devnull, "w", encoding="utf-8")
-    log.info("kimi-bridge starting on %s:%d -> %s", HOST, PORT, UPSTREAM)
+    log.info("Codex Bridge starting on %s:%d -> %s", HOST, PORT, UPSTREAM)
     try:
         import tray_icon
         tray_icon.start(
             os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "assets", "bridge.ico"),
-            f"Kimi Bridge :{PORT}",
+            f"Codex Bridge :{PORT}",
             f"http://{HOST}:{PORT}/dashboard")
     except Exception as _e:
         log.warning("tray icon not started: %s", _e)
