@@ -1058,14 +1058,15 @@ function renderBalance(d){
   requestAnimationFrame(()=>wrap.querySelectorAll(".bbar i").forEach(i=>i.style.width=i.dataset.w+"%"));
   if(balFirst||balAnimPending){balFirst=false;requestAnimationFrame(()=>gsap.from("#balanceCards .bcard",{y:14,autoAlpha:0,duration:.5,stagger:.07,ease:"power3.out",clearProps:"all"}))}
 }
-async function loadBalance(){
-  try{const d=await api("/dashboard/api/balance");lastBal=d;renderBalance(d)}
+async function loadBalance(force){
+  try{const d=await api("/dashboard/api/balance"+(force?"?refresh=true":""));lastBal=d;renderBalance(d)}
   catch(e){const wrap=$("#balanceCards");if(wrap)wrap.innerHTML=`<div class="skel" style="grid-column:1/-1;height:60px"></div>`}
 }
 
 // 页面初始化
 loadDash();
-loadBalance();
+// bal_refresh=1：托盘「一键刷新配额」入口，穿透服务端 60s 缓存
+if(new URLSearchParams(location.search).get("bal_refresh")==="1")loadBalance(true);else loadBalance();
 loadHealth();
 loadProviders();
 
