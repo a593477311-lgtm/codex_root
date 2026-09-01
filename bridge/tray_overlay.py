@@ -167,10 +167,14 @@ def _dlls():
     if _DLLS is not None:
         return _DLLS
 
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    gdi32 = ctypes.windll.gdi32
-    gdiplus = ctypes.windll.gdiplus
+    # Deliberately use private WinDLL instances.  ctypes.windll caches one
+    # shared user32 object, so binding GetMessageW's POINTER(_MSG) here
+    # overwrote tray_icon's incompatible _MSG binding and killed its message
+    # loop on the next notification-icon callback.
+    user32 = ctypes.WinDLL("user32")
+    kernel32 = ctypes.WinDLL("kernel32")
+    gdi32 = ctypes.WinDLL("gdi32")
+    gdiplus = ctypes.WinDLL("gdiplus")
 
     # Window/message APIs.
     user32.DefWindowProcW.argtypes = [ctypes.c_void_p, ctypes.c_uint,

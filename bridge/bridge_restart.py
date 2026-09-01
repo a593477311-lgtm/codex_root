@@ -71,9 +71,15 @@ def main():
     pids = bridge_pids()
     print("bridge pids:", pids)
     for pid in pids:
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+        proc = subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            print("taskkill failed:", (proc.stdout + proc.stderr).strip())
     if pids:
         port_free()
+    if not port_free():
+        print("ERROR: bridge port is still busy; refusing to launch a second process")
+        return 2
     time.sleep(0.8)
 
     start_bridge()
