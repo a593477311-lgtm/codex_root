@@ -1315,26 +1315,32 @@ if __name__ == "__main__":
             return "%.0f万" % (n / 10000)
         return str(n)
 
+    def _refresh_tray_usage():
+        # Shared by the periodic tooltip worker and the hover-popover's
+        # "refresh immediately when shown" path.
+        rows = stats.models(1) or []
+        tot = sum(int(r.get("tokens_total") or 0) for r in rows)
+        req = sum(int(r.get("requests") or 0) for r in rows)
+        # The rich usage display is now the animated hover card.  Keep the
+        # OS tooltip short so Windows' native tooltip does not compete with it.
+        tray_icon.update_tooltip("Codex Bridge :{}".format(PORT))
+        tray_icon.set_usage(rows, tot, req, "今日模型用量")
+
     def _tray_tooltip_worker():
         # Hover tooltip shows today's usage; refresh every 60s so the icon
         # never shows a stale line.
         while True:
             try:
-                rows = stats.models(1) or []
-                tot = sum(int(r.get("tokens_total") or 0) for r in rows)
-                req = sum(int(r.get("requests") or 0) for r in rows)
-                parts = ["Codex Bridge :{}".format(PORT),
-                         "今日 {} tokens · {} 次".format(_cn_num(tot), req)]
-                if rows and tot:
-                    top = rows[0]  # bridge_stats.models sorts by tokens desc
-                    parts.append("{} {}%".format(top.get("model", "?"),
-                                                  round(100.0 * (top.get("tokens_total") or 0) / tot)))
-                tray_icon.update_tooltip("\n".join(parts))
+                _refresh_tray_usage()
             except Exception as _e:
                 log.debug("tray tooltip refresh failed: %s", _e)
             time.sleep(60)
 
     if tray_ok:
+        try:
+            tray_icon.set_refresh_callback(_refresh_tray_usage)
+        except Exception as _e:
+            log.warning("tray hover callback unavailable: %s", _e)
         threading.Thread(target=_tray_tooltip_worker, daemon=True,
                          name="tray-tooltip").start()
     uvicorn.run(app, host=HOST, port=PORT, log_config=None)

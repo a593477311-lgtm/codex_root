@@ -29,8 +29,10 @@ WM_NULL = 0x0000
 WM_DESTROY = 0x0002
 WM_COMMAND = 0x0111
 WM_APP = 0x8000
+WM_MOUSEMOVE = 0x0200
 WM_LBUTTONUP = 0x0202
 WM_RBUTTONUP = 0x0205
+WM_TIMER = 0x0113
 WM_CLOSE = 0x0010
 
 NIM_ADD = 0
@@ -99,6 +101,8 @@ class _MSG(ctypes.Structure):
 
 _DLLS = None
 _NID = None
+_usage_refresh = None
+_hover = None
 
 
 def _dlls():
@@ -137,6 +141,11 @@ def _dlls():
     user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
                                     ctypes.c_void_p, ctypes.c_void_p]
     user32.PostMessageW.restype = ctypes.c_int
+    user32.SetTimer.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                ctypes.c_uint, ctypes.c_void_p]
+    user32.SetTimer.restype = ctypes.c_void_p
+    user32.KillTimer.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    user32.KillTimer.restype = ctypes.c_int
     user32.CreatePopupMenu.restype = ctypes.c_void_p           # HMENU, full 64 bits
     user32.AppendMenuW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
                                    ctypes.c_size_t, ctypes.c_wchar_p]
@@ -183,6 +192,36 @@ def update_tooltip(text):
         shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid))
     except Exception as e:
         log.debug("tooltip update failed: %s", e)
+
+
+def set_usage(rows, total, requests, title="今日模型用量"):
+    """Cache usage for the animated hover card; never raises."""
+    try:
+        import tray_overlay
+        tray_overlay.set_usage(rows, total, requests, title)
+    except Exception as e:
+        log.debug("usage overlay cache failed: %s", e)
+
+
+def set_refresh_callback(callback):
+    """Let kimi_bridge refresh usage immediately when hover starts."""
+    global _usage_refresh
+    _usage_refresh = callback
+
+
+def _refresh_before_hover():
+    callback = _usage_refresh
+    if callback:
+        try:
+            callback()
+        except Exception as e:
+            log.debug("hover usage refresh failed: %s", e)
+
+
+def _near_hover(x, y, radius=30):
+    """False if the cursor has already left the notification icon."""
+    p = _hover
+    return bool(p and abs(x - p[0]) <= radius and abs(y - p[1]) <= radius)
 
 
 def _route_label():
@@ -275,15 +314,35 @@ def _quit(user32, shell32, hwnd):
 def _run(icon_path, tooltip, url):
     try:
         user32, shell32, kernel32 = _dlls()
+        import tray_overlay
 
         shell32.SetCurrentProcessExplicitAppUserModelID("codex.codexbridge")
 
         def wndproc(hwnd, msg, wp, lp):
             if msg == WM_APP:
+                global _hover
                 if lp == WM_LBUTTONUP:
+                    _hover = None
+                    user32.KillTimer(hwnd, ctypes.c_void_p(1))
                     os.startfile(url)
                 elif lp == WM_RBUTTONUP:
+                    _hover = None
+                    user32.KillTimer(hwnd, ctypes.c_void_p(1))
                     _popup_menu(user32, shell32, hwnd, url)
+                elif lp == WM_MOUSEMOVE:
+                    pt = _POINT()
+                    if user32.GetCursorPos(ctypes.byref(pt)):
+                        _hover = (pt.x, pt.y)
+                    user32.SetTimer(hwnd, ctypes.c_void_p(1), 500, None)
+                return 0
+            if msg == WM_TIMER and (wp or 0) == 1:
+                user32.KillTimer(hwnd, ctypes.c_void_p(1))
+                pt = _POINT()
+                if user32.GetCursorPos(ctypes.byref(pt)) and _near_hover(pt.x, pt.y):
+                    _refresh_before_hover()
+                    tray_overlay.show(pt.x, pt.y)
+                else:
+                    _hover = None
                 return 0
             if msg == WM_COMMAND:
                 _dispatch(wp & 0xFFFF, user32, shell32, hwnd, url)
@@ -331,6 +390,9 @@ def _run(icon_path, tooltip, url):
             raise OSError("Shell_NotifyIconW failed")
         global _NID
         _NID = nid
+
+        # The overlay owns its own message thread and can fail independently.
+        tray_overlay.start(url)
 
         msg = _MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
