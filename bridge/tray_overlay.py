@@ -65,25 +65,25 @@ DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2
 
 # Matches the card color from the user's screenshot.
-CARD_RGB = 0x232130
-RING_TRACK_RGB = 0x302C3C
-INK_RGB = 0xEAE9EF
-SUB_RGB = 0x9A99A5
-FAINT_RGB = 0x63626E
+CARD_RGB = 0x13121A
+BORDER_RGB = 0x2E2C3D
+DIVIDER_RGB = 0x232130
+INK_RGB = 0xF2F1F8
+SUB_RGB = 0x8E8A9E
+FAINT_RGB = 0x6E6B80
+ACCENT_RGB = 0x7C65C1
 
 PALETTE = (
-    0xFF8B6CF7,
-    0xFF39D353,
-    0xFF2BC8E6,
-    0xFFF5A623,
-    0xFFF26D6A,
-    0xFFA98BFA,
-    0xFF8BC34A,
-    0xFFF472B6,
+    0x7C65C1,
+    0x22C55E,
+    0x06B6D4,
+    0xF59E0B,
+    0xEC4899,
+    0x8B5CF6,
 )
 
-W = 340
-H = 250
+W = 352
+H = 266
 ANIM_MS = 620
 STAGGER_MS = 75
 FRAME_MS = 16
@@ -307,6 +307,17 @@ def _dlls():
     gdiplus.GdipCreateFontFamilyFromName.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p,
                                                      ctypes.POINTER(ctypes.c_void_p)]
     gdiplus.GdipCreateFontFamilyFromName.restype = ctypes.c_int
+    gdiplus.GdipLoadImageFromFile.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p)]
+    gdiplus.GdipLoadImageFromFile.restype = ctypes.c_int
+    gdiplus.GdipDrawImageRectRect.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float,
+        ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float,
+        ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+    ]
+    gdiplus.GdipDrawImageRectRect.restype = ctypes.c_int
+    gdiplus.GdipDisposeImage.argtypes = [ctypes.c_void_p]
+    gdiplus.GdipDisposeImage.restype = ctypes.c_int
     gdiplus.GdipGetGenericFontFamilySansSerif.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
     gdiplus.GdipGetGenericFontFamilySansSerif.restype = ctypes.c_int
     gdiplus.GdipDeleteFontFamily.argtypes = [ctypes.c_void_p]
@@ -384,7 +395,7 @@ def _dlls():
     return _DLLS
 
 
-def set_usage(rows, total, requests, title="今日模型用量"):
+def set_usage(rows, total, requests, title="Codex Bridge", hit_rate=None):
     """Cache usage rows.  Safe to call from the bridge or tooltip worker."""
     try:
         clean = []
@@ -399,7 +410,9 @@ def set_usage(rows, total, requests, title="今日模型用量"):
             _STATE["rows"] = clean[:6]
             _STATE["total"] = int(total or 0)
             _STATE["requests"] = int(requests or 0)
-            _STATE["title"] = str(title or "今日模型用量")
+            _STATE["title"] = str(title or "Codex Bridge")
+            if hit_rate is not None:
+                _STATE["hit_rate"] = float(hit_rate)
             _STATE["updated"] = time.time()
     except Exception as e:
         log.debug("overlay set_usage failed: %s", e)
@@ -557,45 +570,71 @@ def _draw_card(gdiplus, graphics):
         rows = list(_STATE["rows"])
         total = int(_STATE["total"])
         requests = int(_STATE["requests"])
+        hit_rate = _STATE.get("hit_rate")
 
     gdiplus.GdipSetSmoothingMode(graphics, SMOOTHING_ANTIALIAS)
     gdiplus.GdipSetTextRenderingHint(graphics, TEXT_ANTIALIAS_CLEAR_TYPE)
 
-    background = _rounded_path(gdiplus, 0.5, 0.5, W - 1.0, H - 1.0, 24.0)
+    # Background & border
+    background = _rounded_path(gdiplus, 0.5, 0.5, W - 1.0, H - 1.0, 16.0)
     gdiplus.GdipFillPath(graphics, _brush(gdiplus, CARD_RGB), background)
+    gdiplus.GdipDrawPath(graphics, _pen(gdiplus, BORDER_RGB, 1.0), background)
     gdiplus.GdipDeletePath(background)
 
-    latin_title = _font(gdiplus, 18, FONT_BOLD_ITALIC)
-    cjk_title = _font(gdiplus, 17, FONT_BOLD_ITALIC, cjk=True)
+    # 1. Header: Bridge icon
+    icon_path = os.path.join(os.path.dirname(__file__), "assets", "bridge-icon.png")
+    icon_img = ctypes.c_void_p()
+    if os.path.exists(icon_path) and gdiplus.GdipLoadImageFromFile(icon_path, ctypes.byref(icon_img)) == 0:
+        gdiplus.GdipDrawImageRectRect(
+            graphics, icon_img,
+            ctypes.c_float(20.0), ctypes.c_float(17.0), ctypes.c_float(20.0), ctypes.c_float(20.0),
+            ctypes.c_float(0.0), ctypes.c_float(0.0), ctypes.c_float(256.0), ctypes.c_float(256.0),
+            UNIT_PIXEL, None, None, None
+        )
+        gdiplus.GdipDisposeImage(icon_img)
+
+    # Title (clean, upright semibold typography)
+    title_font = _font(gdiplus, 14.5, FONT_BOLD)
     left_fmt = _format(gdiplus, 0)
     right_fmt = _format(gdiplus, STRING_ALIGNMENT_FAR)
     center_fmt = _format(gdiplus, 1)
 
-    latin = "Codex Bridge"
-    cjk = " 使用统计"
-    latin_width = _measure(gdiplus, graphics, latin, latin_title, left_fmt)
-    gdiplus.GdipDrawString(graphics, latin, len(latin), latin_title,
-                           ctypes.byref(_RECTF(24.0, 17.0, 170.0, 28.0)),
-                           left_fmt, _brush(gdiplus, INK_RGB))
-    gdiplus.GdipDrawString(graphics, cjk, len(cjk), cjk_title,
-                           ctypes.byref(_RECTF(24.0 + latin_width, 18.0, 170.0, 28.0)),
-                           left_fmt, _brush(gdiplus, INK_RGB))
-    _draw_text(gdiplus, graphics, "今日", _font(gdiplus, 12, FONT_BOLD, cjk=True),
-               right_fmt, SUB_RGB, W - 92.0, 24.0, 68.0, 20.0)
-    gdiplus.GdipDrawLine(graphics, _pen(gdiplus, 0x302C3C, 1.0),
-                         24.0, 54.0, W - 24.0, 54.0)
+    _draw_text(gdiplus, graphics, "Codex Bridge", title_font, left_fmt, INK_RGB,
+               46.0, 16.0, 160.0, 22.0)
 
-    radius = 45.0
-    stroke = 17.0
-    cx, cy = 85.0, 136.0
-    gdiplus.GdipDrawArc(graphics, _pen(gdiplus, RING_TRACK_RGB, stroke),
-                        cx - radius, cy - radius, radius * 2.0, radius * 2.0,
-                        -90.0, 360.0)
+    # Badge "今日"
+    badge_w, badge_h = 48.0, 20.0
+    badge_x, badge_y = W - 68.0, 18.0
+    badge_path = _rounded_path(gdiplus, badge_x, badge_y, badge_w, badge_h, 5.0)
+    gdiplus.GdipFillPath(graphics, _brush(gdiplus, 0x201E2E), badge_path)
+    gdiplus.GdipDrawPath(graphics, _pen(gdiplus, 0x3B3750, 1.0), badge_path)
+    gdiplus.GdipDeletePath(badge_path)
+    _draw_text(gdiplus, graphics, "今日", _font(gdiplus, 10.0, FONT_BOLD, cjk=True),
+               center_fmt, 0x9D99AF, badge_x, badge_y, badge_w, badge_h)
+
+    # Divider 1
+    gdiplus.GdipDrawLine(graphics, _pen(gdiplus, DIVIDER_RGB, 1.0),
+                         20.0, 48.0, W - 20.0, 48.0)
+
+    # 2. Donut Chart
+    cx, cy = 76.0, 128.0
+    outer_r = 45.0
+    inner_r = 30.0
+    donut_box = (cx - outer_r, cy - outer_r, outer_r * 2.0, outer_r * 2.0)
+    in_box = (cx - inner_r, cy - inner_r, inner_r * 2.0, inner_r * 2.0)
+
+    # Track background
+    track_pen = _pen(gdiplus, 0x1F1D2B, 15.0)
+    gdiplus.GdipDrawArc(graphics, track_pen,
+                        ctypes.c_float(cx - 37.5), ctypes.c_float(cy - 37.5),
+                        ctypes.c_float(75.0), ctypes.c_float(75.0),
+                        ctypes.c_float(-90.0), ctypes.c_float(360.0))
+
     subtotal = sum(item[1] for item in rows)
     denominator = total or subtotal
     offset = 0.0
     elapsed_ms = max(0.0, time.perf_counter_ns() / 1000000.0 - _anim_start)
-    visible_segments = []
+
     for index, (_model, tokens, _requests) in enumerate(rows[:6]):
         fraction = float(tokens) / denominator if denominator else 0.0
         if fraction <= 0.0:
@@ -605,62 +644,87 @@ def _draw_card(gdiplus, graphics):
         start = -90.0 + 360.0 * offset
         sweep = 360.0 * fraction * eased
         if sweep > 0.0:
-            # Anti-aliased arc endpoints create hairline gaps between slices.
-            # Pad both ends by at most one degree; tiny slices stay tiny.
-            pad = min(SEAM_OVERLAP_DEGREES, sweep / 2.0)
-            gdiplus.GdipDrawArc(
-                graphics, _pen(gdiplus, PALETTE[index % len(PALETTE)], stroke),
-                cx - radius, cy - radius, radius * 2.0, radius * 2.0,
-                start - pad, sweep + (2.0 * pad))
-            visible_segments.append((PALETTE[index % len(PALETTE)], start, sweep))
+            # Draw precise SVG-style annular wedge using closed compound path
+            slice_path = ctypes.c_void_p()
+            if gdiplus.GdipCreatePath(0, ctypes.byref(slice_path)) == 0:
+                gdiplus.GdipAddPathArc(
+                    slice_path,
+                    ctypes.c_float(donut_box[0]), ctypes.c_float(donut_box[1]),
+                    ctypes.c_float(donut_box[2]), ctypes.c_float(donut_box[3]),
+                    ctypes.c_float(start), ctypes.c_float(sweep)
+                )
+                gdiplus.GdipAddPathArc(
+                    slice_path,
+                    ctypes.c_float(in_box[0]), ctypes.c_float(in_box[1]),
+                    ctypes.c_float(in_box[2]), ctypes.c_float(in_box[3]),
+                    ctypes.c_float(start + sweep), ctypes.c_float(-sweep)
+                )
+                gdiplus.GdipClosePathFigure(slice_path)
+                slice_brush = _brush(gdiplus, PALETTE[index % len(PALETTE)])
+                gdiplus.GdipFillPath(graphics, slice_brush, slice_path)
+                gdiplus.GdipDeletePath(slice_path)
         offset += fraction
 
-    # Solid round caps cover the anti-aliased radial edges at slice joins.
-    cap_radius = stroke / 2.0
-    cap_size = stroke
-    for position, (rgb, start_angle, sweep_angle) in enumerate(visible_segments):
-        boundary = start_angle + sweep_angle
-        next_rgb = visible_segments[(position + 1) % len(visible_segments)][0]
-        radians = math.radians(boundary)
-        cap_x = cx + radius * math.cos(radians) - cap_radius
-        cap_y = cy + radius * math.sin(radians) - cap_radius
-        gdiplus.GdipFillEllipse(graphics, _brush(gdiplus, next_rgb),
-                                cap_x, cap_y, cap_size, cap_size)
+    # Donut center text
+    _draw_text(gdiplus, graphics, _fmt_tokens(total), _font(gdiplus, 14.5, FONT_BOLD, cjk=True),
+               center_fmt, INK_RGB, cx - outer_r, cy - 17.0, outer_r * 2.0, 20.0)
+    _draw_text(gdiplus, graphics, "tokens", _font(gdiplus, 9.5, FONT_REGULAR),
+               center_fmt, FAINT_RGB, cx - outer_r, cy + 3.0, outer_r * 2.0, 16.0)
 
-    _draw_text(gdiplus, graphics, _fmt_tokens(total), _font(gdiplus, 16, FONT_BOLD),
-               center_fmt, INK_RGB, cx - radius, cy - 21.0, radius * 2.0, 22.0)
-    _draw_text(gdiplus, graphics, "tokens", _font(gdiplus, 10, FONT_REGULAR, cjk=True),
-               center_fmt, FAINT_RGB, cx - radius, cy + 2.0, radius * 2.0, 15.0)
+    # 3. Model Rows
+    f_model = _font(gdiplus, 11.5, FONT_REGULAR)
+    f_sub = _font(gdiplus, 9.0, FONT_REGULAR, cjk=True)
+    f_pct = _font(gdiplus, 11.0, FONT_BOLD)
 
-    row_font = _font(gdiplus, 11, FONT_REGULAR)
-    name_x = 172.0
-    name_width = 88.0
-    percent_width = 44.0
-    percent_x = W - 26.0 - percent_width
-    row_y = 92.0
+    row_y = 60.0
+    list_left = 152.0
+    name_w = 118.0
+    pct_w = 45.0
+    pct_x = W - 20.0 - pct_w
+
     for index, (model, _tokens, _requests) in enumerate(rows[:4]):
         rgb = PALETTE[index % len(PALETTE)]
-        # FillEllipse is more reliable than a tiny path on every display setup.
+        # Dot
         gdiplus.GdipFillEllipse(graphics, _brush(gdiplus, rgb),
-                                name_x - 16.0, row_y + 4.0, 10.0, 10.0)
-        safe_name = _fit_text(gdiplus, graphics, model, row_font, left_fmt, name_width)
-        _draw_text(gdiplus, graphics, safe_name, row_font, left_fmt,
-                   SUB_RGB, name_x, row_y, name_width, 18.0)
-        fraction = float(_tokens_or_zero(rows, index)) / denominator if denominator else 0.0
-        _draw_text(gdiplus, graphics, "%.1f%%" % (fraction * 100.0), row_font,
-                   right_fmt, SUB_RGB, percent_x, row_y, percent_width, 18.0)
-        row_y += 27.0
+                                ctypes.c_float(list_left), ctypes.c_float(row_y + 4.5),
+                                ctypes.c_float(7.0), ctypes.c_float(7.0))
+        # Name
+        safe_name = _fit_text(gdiplus, graphics, model, f_model, left_fmt, name_w)
+        _draw_text(gdiplus, graphics, safe_name, f_model, left_fmt,
+                   0xE1DFEA, list_left + 15.0, row_y - 1.0, name_w, 18.0)
+        # Sub: tokens · requests
+        tok_fmt = ("%.1f 万" % (_tokens / 10000.0)) if _tokens < 100000000 else ("%.2f 亿" % (_tokens / 100000000.0))
+        sub_text = "%s · %d次" % (tok_fmt, _requests)
+        _draw_text(gdiplus, graphics, sub_text, f_sub, left_fmt,
+                   0x757288, list_left + 15.0, row_y + 15.0, name_w, 15.0)
+        # Percentage
+        fraction = float(_tokens) / denominator if denominator else 0.0
+        _draw_text(gdiplus, graphics, "%.1f%%" % (fraction * 100.0), f_pct,
+                   right_fmt, 0xA5A1B8, pct_x, row_y + 5.0, pct_w, 18.0)
+        row_y += 34.0
+
     if not rows:
         _draw_text(gdiplus, graphics, "暂无模型数据", _font(gdiplus, 11, FONT_REGULAR, cjk=True),
-                   left_fmt, FAINT_RGB, name_x, row_y + 12.0, 116.0, 18.0)
+                   left_fmt, FAINT_RGB, list_left + 15.0, 100.0, 116.0, 18.0)
 
-    gdiplus.GdipDrawLine(graphics, _pen(gdiplus, 0x302C3C, 1.0),
-                         24.0, 199.0, W - 24.0, 199.0)
-    summary = "%s 次 · %s" % (requests, _fmt_tokens(total))
-    _draw_text(gdiplus, graphics, summary, _font(gdiplus, 12, FONT_BOLD, cjk=True),
-               left_fmt, INK_RGB, 24.0, 210.0, 180.0, 22.0)
-    _draw_text(gdiplus, graphics, "点击打开仪表盘", _font(gdiplus, 11, FONT_REGULAR, cjk=True),
-               right_fmt, FAINT_RGB, W - 154.0, 213.0, 130.0, 19.0)
+    # Divider 2
+    gdiplus.GdipDrawLine(graphics, _pen(gdiplus, DIVIDER_RGB, 1.0),
+                         20.0, 210.0, W - 20.0, 210.0)
+
+    # 4. Footer
+    f_foot_l = _font(gdiplus, 10.0, FONT_REGULAR, cjk=True)
+    f_foot_r = _font(gdiplus, 10.5, FONT_BOLD, cjk=True)
+
+    if hit_rate is not None:
+        foot_left_txt = "%d 次 · 命中率 %.1f%%" % (requests, hit_rate * 100.0)
+    else:
+        foot_left_txt = "%d 次请求" % requests
+
+    _draw_text(gdiplus, graphics, foot_left_txt, f_foot_l, left_fmt,
+               SUB_RGB, 20.0, 224.0, 180.0, 20.0)
+    _draw_text(gdiplus, graphics, "打开仪表盘 ↗", f_foot_r, right_fmt,
+               ACCENT_RGB, W - 20.0 - 110.0, 223.0, 110.0, 20.0)
+
     gdiplus.GdipFlush(graphics, 1)
 
 

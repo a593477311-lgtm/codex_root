@@ -195,11 +195,11 @@ def update_tooltip(text):
         log.debug("tooltip update failed: %s", e)
 
 
-def set_usage(rows, total, requests, title="今日模型用量"):
+def set_usage(rows, total, requests, title="Codex Bridge", hit_rate=None):
     """Cache usage for the animated hover card; never raises."""
     try:
         import tray_overlay
-        tray_overlay.set_usage(rows, total, requests, title)
+        tray_overlay.set_usage(rows, total, requests, title, hit_rate=hit_rate)
     except Exception as e:
         log.debug("usage overlay cache failed: %s", e)
 

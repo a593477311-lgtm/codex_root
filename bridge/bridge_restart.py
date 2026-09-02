@@ -1,4 +1,4 @@
-"""Restart the Codex Bridge in place: kill old -> wait port -> relaunch -> health.
+﻿"""Restart the Codex Bridge in place: kill old -> wait port -> relaunch -> health.
 
 Persisted under tools/ (previously a fragile %TEMP% one-off). Launched
 detached by the tray "重启桥接服务" item; also safe to run by hand:
@@ -18,6 +18,7 @@ import urllib.request
 
 DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BRIDGE = os.path.join(HERE, "kimi_bridge.py")
@@ -94,9 +95,15 @@ def start_bridge():
         cand = os.path.join(os.path.dirname(py), "pythonw.exe")
         if os.path.exists(cand):
             py = cand
-    subprocess.Popen([py, BRIDGE],
-                     creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                     close_fds=True)
+    flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen([py, BRIDGE],
+                         creationflags=flags | CREATE_BREAKAWAY_FROM_JOB,
+                         close_fds=True)
+    except OSError:
+        subprocess.Popen([py, BRIDGE],
+                         creationflags=flags,
+                         close_fds=True)
 
 
 def main():
