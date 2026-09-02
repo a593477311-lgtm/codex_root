@@ -8,6 +8,7 @@ exotic and always keeps its opaque background.
 
 import ctypes
 import logging
+import math
 import os
 import threading
 import time
@@ -87,6 +88,7 @@ STAGGER_MS = 75
 FRAME_MS = 16
 CHECK_MS = 110
 ANCHOR_RADIUS = 48
+SEAM_OVERLAP_DEGREES = 1.0
 
 
 class _POINT(ctypes.Structure):
@@ -293,15 +295,19 @@ def _dlls():
     gdiplus.GdipAddPathArc.restype = ctypes.c_int
     gdiplus.GdipClosePathFigure.argtypes = [ctypes.c_void_p]
     gdiplus.GdipClosePathFigure.restype = ctypes.c_int
-    gdiplus.GdipFillPath.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gdiplus.GdipFillPath.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     gdiplus.GdipFillPath.restype = ctypes.c_int
-    gdiplus.GdipDrawPath.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gdiplus.GdipDrawPath.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     gdiplus.GdipDrawPath.restype = ctypes.c_int
     gdiplus.GdipDrawArc.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
                                     ctypes.c_float, ctypes.c_float,
                                     ctypes.c_float, ctypes.c_float,
                                     ctypes.c_float, ctypes.c_float]
     gdiplus.GdipDrawArc.restype = ctypes.c_int
+    gdiplus.GdipFillEllipse.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                        ctypes.c_float, ctypes.c_float,
+                                        ctypes.c_float, ctypes.c_float]
+    gdiplus.GdipFillEllipse.restype = ctypes.c_int
     gdiplus.GdipDrawLine.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
                                      ctypes.c_float, ctypes.c_float,
                                      ctypes.c_float, ctypes.c_float]
@@ -506,8 +512,8 @@ def _draw_card(gdiplus, graphics):
     gdiplus.GdipSetTextRenderingHint(graphics, TEXT_ANTIALIAS_CLEAR_TYPE)
 
     background = _rounded_path(gdiplus, 0.5, 0.5, W - 1.0, H - 1.0, 24.0)
-    gdiplus.GdipFillPath(_brush(gdiplus, CARD_RGB), background)
-    gdiplus.GdipDrawPath(_pen(gdiplus, CARD_BORDER_RGB, 1.4), background)
+    gdiplus.GdipFillPath(graphics, _brush(gdiplus, CARD_RGB), background)
+    gdiplus.GdipDrawPath(graphics, _pen(gdiplus, CARD_BORDER_RGB, 1.4), background)
     gdiplus.GdipDeletePath(background)
 
     latin_title = _font(gdiplus, 18, FONT_BOLD_ITALIC)
@@ -540,6 +546,7 @@ def _draw_card(gdiplus, graphics):
     denominator = total or subtotal
     offset = 0.0
     elapsed_ms = max(0.0, time.perf_counter_ns() / 1000000.0 - _anim_start)
+    visible_segments = []
     for index, (_model, tokens, _requests) in enumerate(rows[:6]):
         fraction = float(tokens) / denominator if denominator else 0.0
         if fraction <= 0.0:
@@ -547,11 +554,29 @@ def _draw_card(gdiplus, graphics):
         progress = max(0.0, min(1.0, (elapsed_ms - index * STAGGER_MS) / ANIM_MS))
         eased = progress * progress * (3.0 - 2.0 * progress)
         start = -90.0 + 360.0 * offset
-        sweep = max(1.0, 360.0 * fraction * eased)
-        gdiplus.GdipDrawArc(graphics, _pen(gdiplus, PALETTE[index % len(PALETTE)], stroke),
-                            cx - radius, cy - radius, radius * 2.0, radius * 2.0,
-                            start, sweep)
+        sweep = 360.0 * fraction * eased
+        if sweep > 0.0:
+            # Anti-aliased arc endpoints create hairline gaps between slices.
+            # Pad both ends by at most one degree; tiny slices stay tiny.
+            pad = min(SEAM_OVERLAP_DEGREES, sweep / 2.0)
+            gdiplus.GdipDrawArc(
+                graphics, _pen(gdiplus, PALETTE[index % len(PALETTE)], stroke),
+                cx - radius, cy - radius, radius * 2.0, radius * 2.0,
+                start - pad, sweep + (2.0 * pad))
+            visible_segments.append((PALETTE[index % len(PALETTE)], start, sweep))
         offset += fraction
+
+    # Solid round caps cover the anti-aliased radial edges at slice joins.
+    cap_radius = stroke / 2.0
+    cap_size = stroke
+    for position, (rgb, start_angle, sweep_angle) in enumerate(visible_segments):
+        boundary = start_angle + sweep_angle
+        next_rgb = visible_segments[(position + 1) % len(visible_segments)][0]
+        radians = math.radians(boundary)
+        cap_x = cx + radius * math.cos(radians) - cap_radius
+        cap_y = cy + radius * math.sin(radians) - cap_radius
+        gdiplus.GdipFillEllipse(graphics, _brush(gdiplus, next_rgb),
+                                cap_x, cap_y, cap_size, cap_size)
 
     _draw_text(gdiplus, graphics, _fmt_tokens(total), _font(gdiplus, 16, FONT_BOLD),
                center_fmt, INK_RGB, cx - radius, cy - 21.0, radius * 2.0, 22.0)
@@ -566,9 +591,9 @@ def _draw_card(gdiplus, graphics):
     row_y = 92.0
     for index, (model, _tokens, _requests) in enumerate(rows[:4]):
         rgb = PALETTE[index % len(PALETTE)]
-        dot = _rounded_path(gdiplus, name_x - 14.0, row_y + 5.0, 8.0, 8.0, 4.0)
-        gdiplus.GdipFillPath(_brush(gdiplus, rgb), dot)
-        gdiplus.GdipDeletePath(dot)
+        # FillEllipse is more reliable than a tiny path on every display setup.
+        gdiplus.GdipFillEllipse(graphics, _brush(gdiplus, rgb),
+                                name_x - 16.0, row_y + 4.0, 10.0, 10.0)
         safe_name = _fit_text(gdiplus, graphics, model, row_font, left_fmt, name_width)
         _draw_text(gdiplus, graphics, safe_name, row_font, left_fmt,
                    SUB_RGB, name_x, row_y, name_width, 18.0)
