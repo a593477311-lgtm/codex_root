@@ -1,9 +1,8 @@
-"""Opaque animated usage card for the Codex Bridge tray icon.
+"""Transparent animated usage card for the Codex Bridge tray icon.
 
-This window intentionally does *not* use WS_EX_LAYERED.  The previous
-per-pixel-alpha experiments made the card background disappear on real
-desktops.  A normal topmost popup painted with double-buffered GDI+ is less
-exotic and always keeps its opaque background.
+The card uses WS_EX_LAYERED with real per-pixel alpha.  GDI+ renders an ARGB
+card into a top-down DIB, the bytes are premultiplied, and UpdateLayeredWindow
+composites it.  Corners are genuinely alpha=0, so no window rectangle remains.
 """
 
 import ctypes
@@ -28,13 +27,12 @@ WM_NCHITTEST = 0x0084
 WM_SETCURSOR = 0x0020
 WM_APP_SHOW = 0x8001
 
-HTCLIENT = 1
 CS_HREDRAW = 0x0002
 CS_VREDRAW = 0x0001
 WS_POPUP = 0x80000000
 
-# TOPMOST | NOACTIVATE | TOOLWINDOW
-EX_STYLE = 0x00000008 | 0x08000000 | 0x00000080
+# TOPMOST | NOACTIVATE | TOOLWINDOW | LAYERED
+EX_STYLE = 0x00000008 | 0x08000000 | 0x00000080 | 0x00080000
 
 SW_HIDE = 0
 SW_SHOWNOACTIVATE = 4
@@ -47,6 +45,10 @@ IDC_HAND = 32649
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
 SRCCOPY = 0x00CC0020
+ULW_ALPHA = 2
+AC_SRC_OVER = 0
+AC_SRC_ALPHA = 1
+PIXEL_FORMAT_32BPP_ARGB = 0x0026200A
 
 UNIT_PIXEL = 2
 FONT_REGULAR = 0
@@ -64,7 +66,6 @@ DWMWCP_ROUND = 2
 
 # Matches the card color from the user's screenshot.
 CARD_RGB = 0x232130
-CARD_BORDER_RGB = 0x3A3448
 RING_TRACK_RGB = 0x302C3C
 INK_RGB = 0xEAE9EF
 SUB_RGB = 0x9A99A5
@@ -132,6 +133,28 @@ class _RECTF(ctypes.Structure):
                 ("width", ctypes.c_float), ("height", ctypes.c_float)]
 
 
+class _SIZE(ctypes.Structure):
+    _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+
+class _BLENDFUNCTION(ctypes.Structure):
+    _fields_ = [("BlendOp", ctypes.c_byte), ("BlendFlags", ctypes.c_byte),
+                ("SourceConstantAlpha", ctypes.c_byte), ("AlphaFormat", ctypes.c_byte)]
+
+
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", ctypes.c_uint), ("biWidth", ctypes.c_long),
+                ("biHeight", ctypes.c_long), ("biPlanes", ctypes.c_ushort),
+                ("biBitCount", ctypes.c_ushort), ("biCompression", ctypes.c_uint),
+                ("biSizeImage", ctypes.c_uint), ("biXPelsPerMeter", ctypes.c_long),
+                ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", ctypes.c_uint),
+                ("biClrImportant", ctypes.c_uint)]
+
+
+class _BITMAPINFO(ctypes.Structure):
+    _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", ctypes.c_uint * 3)]
+
+
 _DLLS = None
 _TOKEN = None
 _READY = threading.Event()
@@ -158,6 +181,7 @@ _FONT_CACHE = {}
 _FORMAT_CACHE = {}
 _BRUSH_CACHE = {}
 _PEN_CACHE = {}
+_POS = [0, 0]
 
 
 def _dlls():
@@ -222,6 +246,12 @@ def _dlls():
     user32.ReleaseDC.restype = ctypes.c_int
     user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
     user32.SetWindowRgn.restype = ctypes.c_int
+    user32.UpdateLayeredWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                           ctypes.POINTER(_POINT), ctypes.POINTER(_SIZE),
+                                           ctypes.c_void_p, ctypes.POINTER(_POINT),
+                                           ctypes.c_uint, ctypes.POINTER(_BLENDFUNCTION),
+                                           ctypes.c_uint]
+    user32.UpdateLayeredWindow.restype = ctypes.c_int
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.GetSystemMetrics.restype = ctypes.c_int
     kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
@@ -241,6 +271,10 @@ def _dlls():
                                          ctypes.c_int, ctypes.c_int,
                                          ctypes.c_int, ctypes.c_int]
     gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
+    gdi32.CreateDIBSection.argtypes = [ctypes.c_void_p, ctypes.POINTER(_BITMAPINFO),
+                                       ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p),
+                                       ctypes.c_void_p, ctypes.c_uint]
+    gdi32.CreateDIBSection.restype = ctypes.c_void_p
     gdi32.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
                              ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
                              ctypes.c_int, ctypes.c_int, ctypes.c_uint]
@@ -253,6 +287,15 @@ def _dlls():
     gdiplus.GdiplusShutdown.restype = None
     gdiplus.GdipCreateFromHDC.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
     gdiplus.GdipCreateFromHDC.restype = ctypes.c_int
+    gdiplus.GdipCreateBitmapFromScan0.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                                  ctypes.c_int, ctypes.c_void_p,
+                                                  ctypes.POINTER(ctypes.c_void_p)]
+    gdiplus.GdipCreateBitmapFromScan0.restype = ctypes.c_int
+    gdiplus.GdipDisposeImage.argtypes = [ctypes.c_void_p]
+    gdiplus.GdipDisposeImage.restype = ctypes.c_int
+    gdiplus.GdipGetImageGraphicsContext.argtypes = [ctypes.c_void_p,
+                                                    ctypes.POINTER(ctypes.c_void_p)]
+    gdiplus.GdipGetImageGraphicsContext.restype = ctypes.c_int
     gdiplus.GdipDeleteGraphics.argtypes = [ctypes.c_void_p]
     gdiplus.GdipDeleteGraphics.restype = ctypes.c_int
     gdiplus.GdipFlush.argtypes = [ctypes.c_void_p, ctypes.c_int]
@@ -520,7 +563,6 @@ def _draw_card(gdiplus, graphics):
 
     background = _rounded_path(gdiplus, 0.5, 0.5, W - 1.0, H - 1.0, 24.0)
     gdiplus.GdipFillPath(graphics, _brush(gdiplus, CARD_RGB), background)
-    gdiplus.GdipDrawPath(graphics, _pen(gdiplus, CARD_BORDER_RGB, 1.4), background)
     gdiplus.GdipDeletePath(background)
 
     latin_title = _font(gdiplus, 18, FONT_BOLD_ITALIC)
@@ -623,34 +665,81 @@ def _draw_card(gdiplus, graphics):
 
 
 def _paint_window(hwnd):
-    """Double-buffer opaque GDI+ output, then BitBlt it to the window."""
+    """Render ARGB GDI+ into a premultiplied DIB for UpdateLayeredWindow."""
     user32, _kernel32, gdi32, gdiplus, _dwmapi, _post_user32 = _dlls()
-    hwnd_dc = None
+    screen_dc = None
     mem_dc = None
-    bitmap = None
+    hbitmap = None
+    bits = ctypes.c_void_p()
     old_bitmap = None
     graphics = ctypes.c_void_p()
+    gp_bitmap = ctypes.c_void_p()
     try:
-        hwnd_dc = user32.GetDC(hwnd)
-        mem_dc = gdi32.CreateCompatibleDC(hwnd_dc)
-        bitmap = gdi32.CreateCompatibleBitmap(hwnd_dc, W, H)
-        old_bitmap = gdi32.SelectObject(mem_dc, bitmap)
-        if gdiplus.GdipCreateFromHDC(mem_dc, ctypes.byref(graphics)) != 0:
-            raise OSError("GdipCreateFromHDC failed")
+        screen_dc = user32.GetDC(None)
+        mem_dc = gdi32.CreateCompatibleDC(screen_dc)
+        user32.ReleaseDC(None, screen_dc)
+        screen_dc = None
+
+        bmi = _BITMAPINFO()
+        bmi.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = W
+        bmi.bmiHeader.biHeight = -H  # top-down
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 32
+        bmi.bmiHeader.biCompression = 0  # BI_RGB
+        hbitmap = gdi32.CreateDIBSection(mem_dc, ctypes.byref(bmi), 0,
+                                         ctypes.byref(bits), None, 0)
+        if not hbitmap or not bits:
+            raise OSError("CreateDIBSection failed")
+        old_bitmap = gdi32.SelectObject(mem_dc, hbitmap)
+
+        # Let GDI+ render straight-alpha ARGB directly into the DIB.
+        if gdiplus.GdipCreateBitmapFromScan0(W, H, W * 4, PIXEL_FORMAT_32BPP_ARGB,
+                                             bits, ctypes.byref(gp_bitmap)) != 0:
+            raise OSError("GdipCreateBitmapFromScan0 failed")
+        if gdiplus.GdipGetImageGraphicsContext(gp_bitmap, ctypes.byref(graphics)) != 0:
+            raise OSError("GdipGetImageGraphicsContext failed")
         _draw_card(gdiplus, graphics)
-        if not gdi32.BitBlt(hwnd_dc, 0, 0, W, H, mem_dc, 0, 0, SRCCOPY):
-            raise OSError("BitBlt failed")
+        gdiplus.GdipFlush(graphics, 1)
+
+        # Release GDI+ before mutating the external DIB memory.
+        gdiplus.GdipDeleteGraphics(graphics)
+        graphics = ctypes.c_void_p()
+        gdiplus.GdipDisposeImage(gp_bitmap)
+        gp_bitmap = ctypes.c_void_p()
+
+        # Convert straight-alpha BGRA to the premultiplied BGRA required by
+        # UpdateLayeredWindow.  Opaque card pixels are unchanged.
+        pixels = ctypes.cast(bits, ctypes.POINTER(ctypes.c_ubyte))
+        for offset in range(0, W * H * 4, 4):
+            alpha = pixels[offset + 3]
+            if alpha == 255 or alpha == 0:
+                continue
+            pixels[offset] = pixels[offset] * alpha // 255
+            pixels[offset + 1] = pixels[offset + 1] * alpha // 255
+            pixels[offset + 2] = pixels[offset + 2] * alpha // 255
+
+        dst = _POINT(_POS[0], _POS[1])
+        src = _POINT(0, 0)
+        size = _SIZE(W, H)
+        blend = _BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
+        if not user32.UpdateLayeredWindow(hwnd, None, ctypes.byref(dst),
+                                          ctypes.byref(size), mem_dc,
+                                          ctypes.byref(src), 0,
+                                          ctypes.byref(blend), ULW_ALPHA):
+            error = ctypes.get_last_error()
+            raise OSError(f"UpdateLayeredWindow failed ({error})")
     finally:
         if graphics:
             gdiplus.GdipDeleteGraphics(graphics)
+        if gp_bitmap:
+            gdiplus.GdipDisposeImage(gp_bitmap)
         if old_bitmap and mem_dc:
             gdi32.SelectObject(mem_dc, old_bitmap)
-        if bitmap:
-            gdi32.DeleteObject(bitmap)
+        if hbitmap:
+            gdi32.DeleteObject(hbitmap)
         if mem_dc:
             gdi32.DeleteDC(mem_dc)
-        if hwnd_dc:
-            user32.ReleaseDC(hwnd, hwnd_dc)
 
 
 def _cursor_in_rect(x, y, left, top, right, bottom, margin=0):
@@ -689,12 +778,13 @@ def _show_at(user32, x, y):
     screen_h = user32.GetSystemMetrics(SM_CYSCREEN)
     left = min(max(8, x - W + 42), screen_w - W - 8)
     top = max(8, y - H - 18)
+    _POS[0] = left
+    _POS[1] = top
     _anchor = (x, y)
     _anim_start = time.perf_counter_ns() / 1000000.0
     user32.SetWindowPos(_hwnd, ctypes.c_void_p(HWND_TOPMOST), left, top, W, H,
                         SWP_NOACTIVATE | SWP_SHOWWINDOW)
     _paint_window(_hwnd)
-    user32.InvalidateRect(_hwnd, None, 0)
     user32.SetTimer(_hwnd, ctypes.c_void_p(1), FRAME_MS, None)
     user32.SetTimer(_hwnd, ctypes.c_void_p(2), CHECK_MS, None)
 
@@ -811,20 +901,6 @@ def _run():
             raise OSError("CreateWindowExW(overlay) failed")
         _hwnd = hwnd
 
-        # Clip the actual window, not just the painted path.  Without this the
-        # rectangular HWND's four unused corners can show as black squares.
-        region = gdi32.CreateRoundRectRgn(0, 0, W + 1, H + 1,
-                                          CARD_CORNER_DIAMETER, CARD_CORNER_DIAMETER)
-        if region:
-            user32.SetWindowRgn(hwnd, region, 1)
-
-        # Win11 can additionally provide system-rounded corners/shadows.
-        dark_mode = ctypes.c_int(1)
-        dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
-                                     ctypes.byref(dark_mode), ctypes.sizeof(dark_mode))
-        corner = ctypes.c_int(DWMWCP_ROUND)
-        dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
-                                     ctypes.byref(corner), ctypes.sizeof(corner))
         _READY.set()
 
         queue = _MSG()
