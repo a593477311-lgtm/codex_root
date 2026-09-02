@@ -89,6 +89,7 @@ FRAME_MS = 16
 CHECK_MS = 110
 ANCHOR_RADIUS = 48
 SEAM_OVERLAP_DEGREES = 1.0
+CARD_CORNER_DIAMETER = 48
 
 
 class _POINT(ctypes.Structure):
@@ -219,6 +220,8 @@ def _dlls():
     user32.GetDC.restype = ctypes.c_void_p
     user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     user32.ReleaseDC.restype = ctypes.c_int
+    user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+    user32.SetWindowRgn.restype = ctypes.c_int
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.GetSystemMetrics.restype = ctypes.c_int
     kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
@@ -234,6 +237,10 @@ def _dlls():
     gdi32.DeleteDC.restype = ctypes.c_int
     gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
     gdi32.DeleteObject.restype = ctypes.c_int
+    gdi32.CreateRoundRectRgn.argtypes = [ctypes.c_int, ctypes.c_int,
+                                         ctypes.c_int, ctypes.c_int,
+                                         ctypes.c_int, ctypes.c_int]
+    gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
     gdi32.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
                              ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
                              ctypes.c_int, ctypes.c_int, ctypes.c_uint]
@@ -804,7 +811,14 @@ def _run():
             raise OSError("CreateWindowExW(overlay) failed")
         _hwnd = hwnd
 
-        # Win11 rounded card.  If DWM refuses, the card simply has square corners.
+        # Clip the actual window, not just the painted path.  Without this the
+        # rectangular HWND's four unused corners can show as black squares.
+        region = gdi32.CreateRoundRectRgn(0, 0, W + 1, H + 1,
+                                          CARD_CORNER_DIAMETER, CARD_CORNER_DIAMETER)
+        if region:
+            user32.SetWindowRgn(hwnd, region, 1)
+
+        # Win11 can additionally provide system-rounded corners/shadows.
         dark_mode = ctypes.c_int(1)
         dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
                                      ctypes.byref(dark_mode), ctypes.sizeof(dark_mode))
