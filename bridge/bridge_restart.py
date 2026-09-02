@@ -8,6 +8,7 @@ Rollback to kimi_bridge.py.bak happens only when that file actually exists.
 """
 
 import os
+import ctypes
 import shutil
 import socket
 import subprocess
@@ -48,6 +49,37 @@ def port_free(timeout=6.0):
     return False
 
 
+def kill_pids(pids, timeout=5.0):
+    """Terminate only these PIDs; never walk the process tree.
+
+    The restart script is launched as a child of kimi_bridge.  A tree kill
+    would kill the restarter before it can relaunch the bridge.
+    """
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    kernel32.TerminateProcess.restype = ctypes.c_int
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    process_terminate = 0x0001
+    synchronize = 0x00100000
+    for pid in pids:
+        handle = kernel32.OpenProcess(process_terminate | synchronize, 0, int(pid))
+        if not handle:
+            subprocess.run(["powershell", "-NoProfile", "-Command",
+                            f"Stop-Process -Id {int(pid)} -Force"],
+                           capture_output=True, text=True)
+            continue
+        try:
+            kernel32.TerminateProcess(handle, 1)
+            kernel32.WaitForSingleObject(handle, int(timeout * 1000))
+        finally:
+            kernel32.CloseHandle(handle)
+
+
 def healthy(timeout=5):
     try:
         with urllib.request.urlopen(HEALTH, timeout=timeout) as r:
@@ -70,13 +102,10 @@ def start_bridge():
 def main():
     pids = bridge_pids()
     print("bridge pids:", pids)
-    for pid in pids:
-        proc = subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                              capture_output=True, text=True)
-        if proc.returncode != 0:
-            print("taskkill failed:", (proc.stdout + proc.stderr).strip())
-    if pids:
-        port_free()
+    kill_pids(pids)
+    if pids and not port_free():
+        print("ERROR: old bridge did not terminate; refusing to launch a second process")
+        return 2
     if not port_free():
         print("ERROR: bridge port is still busy; refusing to launch a second process")
         return 2

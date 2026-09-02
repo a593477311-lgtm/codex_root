@@ -1,14 +1,9 @@
-"""Animated usage popover for the Codex Bridge tray icon.
+"""Opaque animated usage card for the Codex Bridge tray icon.
 
-This is the "Plan A" implementation: a small topmost window drawn directly
-with GDI+ through ctypes.  It deliberately avoids pywebview/WebView2 and any
-network/window framework dependency.  The tray module only asks this module to
-show a window and to refresh usage rows; every failure is contained here and
-never takes the bridge or the basic tray icon down.
-
-The donut deliberately copies the dashboard look: rounded charcoal card,
-the same vendor palette, total tokens in the middle, and a short staggered
-sweep animation when the card appears.
+This window intentionally does *not* use WS_EX_LAYERED.  The previous
+per-pixel-alpha experiments made the card background disappear on real
+desktops.  A normal topmost popup painted with double-buffered GDI+ is less
+exotic and always keeps its opaque background.
 """
 
 import ctypes
@@ -23,6 +18,7 @@ log = logging.getLogger("kimi_bridge.tray-overlay")
 WM_NULL = 0x0000
 WM_CLOSE = 0x0010
 WM_PAINT = 0x000F
+WM_ERASEBKGND = 0x0014
 WM_TIMER = 0x0113
 WM_LBUTTONUP = 0x0202
 WM_MOUSEMOVE = 0x0200
@@ -32,15 +28,12 @@ WM_SETCURSOR = 0x0020
 WM_APP_SHOW = 0x8001
 
 HTCLIENT = 1
-HTTRANSPARENT = -1
-
 CS_HREDRAW = 0x0002
 CS_VREDRAW = 0x0001
 WS_POPUP = 0x80000000
-WS_VISIBLE = 0x10000000
 
-# TOPMOST | NOACTIVATE | TOOLWINDOW | LAYERED
-EX_STYLE = 0x00000008 | 0x08000000 | 0x00000080 | 0x00080000
+# TOPMOST | NOACTIVATE | TOOLWINDOW
+EX_STYLE = 0x00000008 | 0x08000000 | 0x00000080
 
 SW_HIDE = 0
 SW_SHOWNOACTIVATE = 4
@@ -50,35 +43,32 @@ SWP_SHOWWINDOW = 0x0040
 
 IDC_ARROW = 32512
 IDC_HAND = 32649
-IMAGE_CURSOR = 2
-
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
-
-ULW_ALPHA = 2
-AC_SRC_OVER = 0
-AC_SRC_ALPHA = 1
+SRCCOPY = 0x00CC0020
 
 UNIT_PIXEL = 2
 FONT_REGULAR = 0
 FONT_BOLD = 1
+FONT_BOLD_ITALIC = 3
 SMOOTHING_ANTIALIAS = 4
-TEXT_ANTIALIAS_GRIDFIT = 4
-PIXEL_FORMAT_32BPP_ARGB = 0x0026200A
-STRING_ALIGNMENT_CENTER = 1
+TEXT_ANTIALIAS_CLEAR_TYPE = 5
+STRING_ALIGNMENT_NEAR = 0
+STRING_ALIGNMENT_FAR = 2
 
 TME_LEAVE = 0x00000002
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_WINDOW_CORNER_PREFERENCE = 33
+DWMWCP_ROUND = 2
 
-# Layout / animation constants.
-W = 288
-H = 222
-ANIM_MS = 620
-STAGGER_MS = 75
-FRAME_MS = 16
-CHECK_MS = 110
-ANCHOR_RADIUS = 46
+# Matches the card color from the user's screenshot.
+CARD_RGB = 0x232130
+CARD_BORDER_RGB = 0x3A3448
+RING_TRACK_RGB = 0x302C3C
+INK_RGB = 0xEAE9EF
+SUB_RGB = 0x9A99A5
+FAINT_RGB = 0x63626E
 
-# dashboard palette: --v1 / green / cyan / amber / red / --v2 / ...
 PALETTE = (
     0xFF8B6CF7,
     0xFF39D353,
@@ -90,13 +80,22 @@ PALETTE = (
     0xFFF472B6,
 )
 
+W = 340
+H = 250
+ANIM_MS = 620
+STAGGER_MS = 75
+FRAME_MS = 16
+CHECK_MS = 110
+ANCHOR_RADIUS = 48
+
 
 class _POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
 
-class _SIZE(ctypes.Structure):
-    _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
 
 
 class _MSG(ctypes.Structure):
@@ -118,29 +117,11 @@ class _TRACKMOUSEEVENT(ctypes.Structure):
                 ("hwndTrack", ctypes.c_void_p), ("dwHoverTime", ctypes.c_uint)]
 
 
-class _BLENDFUNCTION(ctypes.Structure):
-    _fields_ = [("BlendOp", ctypes.c_byte), ("BlendFlags", ctypes.c_byte),
-                ("SourceConstantAlpha", ctypes.c_byte), ("AlphaFormat", ctypes.c_byte)]
-
-
 class _GdiplusStartupInput(ctypes.Structure):
     _fields_ = [("GdiplusVersion", ctypes.c_uint),
                 ("DebugEventCallback", ctypes.c_void_p),
                 ("SuppressBackgroundThread", ctypes.c_int),
                 ("SuppressExternalCodecs", ctypes.c_int)]
-
-
-class _BITMAPINFOHEADER(ctypes.Structure):
-    _fields_ = [("biSize", ctypes.c_uint), ("biWidth", ctypes.c_long),
-                ("biHeight", ctypes.c_long), ("biPlanes", ctypes.c_ushort),
-                ("biBitCount", ctypes.c_ushort), ("biCompression", ctypes.c_uint),
-                ("biSizeImage", ctypes.c_uint), ("biXPelsPerMeter", ctypes.c_long),
-                ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", ctypes.c_uint),
-                ("biClrImportant", ctypes.c_uint)]
-
-
-class _BITMAPINFO(ctypes.Structure):
-    _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", ctypes.c_uint * 3)]
 
 
 class _RECTF(ctypes.Structure):
@@ -150,6 +131,16 @@ class _RECTF(ctypes.Structure):
 
 _DLLS = None
 _TOKEN = None
+_READY = threading.Event()
+_THREAD_LOCK = threading.Lock()
+_THREAD = None
+_hwnd = None
+_proc = None
+_mouse_tracked = False
+_anim_start = 0.0
+_anchor = None
+_url = ""
+
 _STATE = {
     "rows": [],
     "total": 0,
@@ -157,39 +148,30 @@ _STATE = {
     "title": "今日模型用量",
     "updated": 0.0,
 }
-_LOCK = threading.Lock()
-_THREAD_LOCK = threading.Lock()
-_THREAD = None
-_READY = threading.Event()
+_STATE_LOCK = threading.Lock()
 
-# Populated on the overlay thread.
-_hwnd = None
-_gdiplus = None
-_url = ""
-_shown_at = 0.0
-_anim_start = 0
-_anchor = None
-_mouse_tracked = False
-_proc = None
-_class_atom = 0
+_FAMILY = None
+_FONT_CACHE = {}
+_FORMAT_CACHE = {}
+_BRUSH_CACHE = {}
+_PEN_CACHE = {}
 
 
 def _dlls():
-    """Bind all Win64-sensitive APIs once; mixed handles are the usual bug."""
+    """Create private WinDLL instances and bind every Win64-sensitive call."""
     global _DLLS
     if _DLLS is not None:
         return _DLLS
 
-    # Deliberately use private WinDLL instances.  ctypes.windll caches one
-    # shared user32 object, so binding GetMessageW's POINTER(_MSG) here
-    # overwrote tray_icon's incompatible _MSG binding and killed its message
-    # loop on the next notification-icon callback.
     user32 = ctypes.WinDLL("user32")
     kernel32 = ctypes.WinDLL("kernel32")
     gdi32 = ctypes.WinDLL("gdi32")
     gdiplus = ctypes.WinDLL("gdiplus")
+    dwmapi = ctypes.WinDLL("dwmapi")
+    # PostMessageW gets its own instance.  This avoids the bizarre shared
+    # argtypes poisoning seen on this host and keeps overlay/tray isolated.
+    post_user32 = ctypes.WinDLL("user32", use_last_error=True)
 
-    # Window/message APIs.
     user32.DefWindowProcW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
                                       ctypes.c_void_p, ctypes.c_void_p]
     user32.DefWindowProcW.restype = ctypes.c_longlong
@@ -200,8 +182,6 @@ def _dlls():
                                        ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
                                        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     user32.CreateWindowExW.restype = ctypes.c_void_p
-    user32.DestroyWindow.argtypes = [ctypes.c_void_p]
-    user32.DestroyWindow.restype = ctypes.c_int
     user32.GetMessageW.argtypes = [ctypes.POINTER(_MSG), ctypes.c_void_p,
                                    ctypes.c_uint, ctypes.c_uint]
     user32.GetMessageW.restype = ctypes.c_int
@@ -209,14 +189,12 @@ def _dlls():
     user32.TranslateMessage.restype = ctypes.c_int
     user32.DispatchMessageW.argtypes = [ctypes.POINTER(_MSG)]
     user32.DispatchMessageW.restype = ctypes.c_longlong
-    user32.PostQuitMessage.argtypes = [ctypes.c_int]
-    user32.PostQuitMessage.restype = None
     user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
                                     ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
     user32.SetWindowPos.restype = ctypes.c_int
     user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
     user32.ShowWindow.restype = ctypes.c_int
-    user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_POINT * 2)]
+    user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_RECT)]
     user32.GetWindowRect.restype = ctypes.c_int
     user32.GetCursorPos.argtypes = [ctypes.POINTER(_POINT)]
     user32.GetCursorPos.restype = ctypes.c_int
@@ -230,59 +208,72 @@ def _dlls():
     user32.LoadCursorW.restype = ctypes.c_void_p
     user32.SetCursor.argtypes = [ctypes.c_void_p]
     user32.SetCursor.restype = ctypes.c_void_p
-    user32.UpdateLayeredWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
-                                           ctypes.POINTER(_POINT), ctypes.POINTER(_SIZE),
-                                           ctypes.c_void_p, ctypes.POINTER(_POINT),
-                                           ctypes.c_uint, ctypes.POINTER(_BLENDFUNCTION),
-                                           ctypes.c_uint]
-    user32.UpdateLayeredWindow.restype = ctypes.c_int
+    user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                    ctypes.c_void_p, ctypes.c_void_p]
+    user32.PostMessageW.restype = ctypes.c_int
+    user32.ValidateRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    user32.ValidateRect.restype = ctypes.c_int
     user32.GetDC.argtypes = [ctypes.c_void_p]
     user32.GetDC.restype = ctypes.c_void_p
     user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     user32.ReleaseDC.restype = ctypes.c_int
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.GetSystemMetrics.restype = ctypes.c_int
-    user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
-                                    ctypes.c_void_p, ctypes.c_void_p]
-    user32.PostMessageW.restype = ctypes.c_int
     kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
     kernel32.GetModuleHandleW.restype = ctypes.c_void_p
 
-    # Bitblt / bitmap ownership during UpdateLayeredWindow.
     gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
     gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
-    gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
-    gdi32.DeleteDC.restype = ctypes.c_int
+    gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
     gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     gdi32.SelectObject.restype = ctypes.c_void_p
+    gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+    gdi32.DeleteDC.restype = ctypes.c_int
     gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
     gdi32.DeleteObject.restype = ctypes.c_int
-    gdi32.CreateDIBSection.argtypes = [ctypes.c_void_p, ctypes.POINTER(_BITMAPINFO),
-                                       ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p),
-                                       ctypes.c_void_p, ctypes.c_uint]
-    gdi32.CreateDIBSection.restype = ctypes.c_void_p
+    gdi32.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                             ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                             ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    gdi32.BitBlt.restype = ctypes.c_int
 
-    # GDI+ object APIs.  All opaque handles stay c_void_p.
     gdiplus.GdiplusStartup.argtypes = [ctypes.POINTER(ctypes.c_void_p),
                                        ctypes.POINTER(_GdiplusStartupInput), ctypes.c_void_p]
     gdiplus.GdiplusStartup.restype = ctypes.c_int
     gdiplus.GdiplusShutdown.argtypes = [ctypes.c_void_p]
     gdiplus.GdiplusShutdown.restype = None
-    gdiplus.GdipCreateBitmapFromScan0.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int,
-                                                  ctypes.c_int, ctypes.c_void_p,
-                                                  ctypes.POINTER(ctypes.c_void_p)]
-    gdiplus.GdipCreateBitmapFromScan0.restype = ctypes.c_int
-    gdiplus.GdipDisposeImage.argtypes = [ctypes.c_void_p]
-    gdiplus.GdipDisposeImage.restype = ctypes.c_int
-    gdiplus.GdipGetImageGraphicsContext.argtypes = [ctypes.c_void_p,
-                                                    ctypes.POINTER(ctypes.c_void_p)]
-    gdiplus.GdipGetImageGraphicsContext.restype = ctypes.c_int
+    gdiplus.GdipCreateFromHDC.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    gdiplus.GdipCreateFromHDC.restype = ctypes.c_int
     gdiplus.GdipDeleteGraphics.argtypes = [ctypes.c_void_p]
     gdiplus.GdipDeleteGraphics.restype = ctypes.c_int
+    gdiplus.GdipFlush.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    gdiplus.GdipFlush.restype = ctypes.c_int
     gdiplus.GdipSetSmoothingMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
     gdiplus.GdipSetSmoothingMode.restype = ctypes.c_int
     gdiplus.GdipSetTextRenderingHint.argtypes = [ctypes.c_void_p, ctypes.c_int]
     gdiplus.GdipSetTextRenderingHint.restype = ctypes.c_int
+    gdiplus.GdipCreateFontFamilyFromName.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p,
+                                                     ctypes.POINTER(ctypes.c_void_p)]
+    gdiplus.GdipCreateFontFamilyFromName.restype = ctypes.c_int
+    gdiplus.GdipGetGenericFontFamilySansSerif.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    gdiplus.GdipGetGenericFontFamilySansSerif.restype = ctypes.c_int
+    gdiplus.GdipDeleteFontFamily.argtypes = [ctypes.c_void_p]
+    gdiplus.GdipDeleteFontFamily.restype = ctypes.c_int
+    gdiplus.GdipCreateFont.argtypes = [ctypes.c_void_p, ctypes.c_float,
+                                       ctypes.c_int, ctypes.c_int,
+                                       ctypes.POINTER(ctypes.c_void_p)]
+    gdiplus.GdipCreateFont.restype = ctypes.c_int
+    gdiplus.GdipDeleteFont.argtypes = [ctypes.c_void_p]
+    gdiplus.GdipDeleteFont.restype = ctypes.c_int
+    gdiplus.GdipCreateStringFormat.argtypes = [ctypes.c_int, ctypes.c_int,
+                                               ctypes.POINTER(ctypes.c_void_p)]
+    gdiplus.GdipCreateStringFormat.restype = ctypes.c_int
+    gdiplus.GdipDeleteStringFormat.argtypes = [ctypes.c_void_p]
+    gdiplus.GdipDeleteStringFormat.restype = ctypes.c_int
+    gdiplus.GdipSetStringFormatAlign.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    gdiplus.GdipSetStringFormatAlign.restype = ctypes.c_int
+    gdiplus.GdipSetStringFormatLineAlign.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    gdiplus.GdipSetStringFormatLineAlign.restype = ctypes.c_int
     gdiplus.GdipCreateSolidFill.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)]
     gdiplus.GdipCreateSolidFill.restype = ctypes.c_int
     gdiplus.GdipDeleteBrush.argtypes = [ctypes.c_void_p]
@@ -315,371 +306,319 @@ def _dlls():
                                      ctypes.c_float, ctypes.c_float,
                                      ctypes.c_float, ctypes.c_float]
     gdiplus.GdipDrawLine.restype = ctypes.c_int
-    gdiplus.GdipCreateFontFamilyFromName.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p,
-                                                     ctypes.POINTER(ctypes.c_void_p)]
-    gdiplus.GdipCreateFontFamilyFromName.restype = ctypes.c_int
-    gdiplus.GdipGetGenericFontFamilySansSerif.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
-    gdiplus.GdipGetGenericFontFamilySansSerif.restype = ctypes.c_int
-    gdiplus.GdipDeleteFontFamily.argtypes = [ctypes.c_void_p]
-    gdiplus.GdipDeleteFontFamily.restype = ctypes.c_int
-    gdiplus.GdipCreateFont.argtypes = [ctypes.c_void_p, ctypes.c_float,
-                                       ctypes.c_int, ctypes.c_int,
-                                       ctypes.POINTER(ctypes.c_void_p)]
-    gdiplus.GdipCreateFont.restype = ctypes.c_int
-    gdiplus.GdipDeleteFont.argtypes = [ctypes.c_void_p]
-    gdiplus.GdipDeleteFont.restype = ctypes.c_int
-    gdiplus.GdipCreateStringFormat.argtypes = [ctypes.c_int, ctypes.c_int,
-                                               ctypes.POINTER(ctypes.c_void_p)]
-    gdiplus.GdipCreateStringFormat.restype = ctypes.c_int
-    gdiplus.GdipDeleteStringFormat.argtypes = [ctypes.c_void_p]
-    gdiplus.GdipDeleteStringFormat.restype = ctypes.c_int
-    gdiplus.GdipSetStringFormatAlign.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    gdiplus.GdipSetStringFormatAlign.restype = ctypes.c_int
-    gdiplus.GdipSetStringFormatLineAlign.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    gdiplus.GdipSetStringFormatLineAlign.restype = ctypes.c_int
     gdiplus.GdipDrawString.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int,
                                        ctypes.c_void_p, ctypes.POINTER(_RECTF),
                                        ctypes.c_void_p, ctypes.c_void_p]
     gdiplus.GdipDrawString.restype = ctypes.c_int
-    gdiplus.GdipFlush.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    gdiplus.GdipFlush.restype = ctypes.c_int
+    gdiplus.GdipMeasureString.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int,
+                                          ctypes.c_void_p, ctypes.POINTER(_RECTF),
+                                          ctypes.c_void_p, ctypes.POINTER(_RECTF),
+                                          ctypes.c_void_p, ctypes.c_void_p]
+    gdiplus.GdipMeasureString.restype = ctypes.c_int
 
-    _DLLS = (user32, kernel32, gdi32, gdiplus)
+    dwmapi.DwmSetWindowAttribute.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                             ctypes.c_void_p, ctypes.c_uint]
+    dwmapi.DwmSetWindowAttribute.restype = ctypes.c_int
+
+    post_user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                         ctypes.c_void_p, ctypes.c_void_p]
+    post_user32.PostMessageW.restype = ctypes.c_int
+
+    _DLLS = (user32, kernel32, gdi32, gdiplus, dwmapi, post_user32)
     return _DLLS
 
 
-def _set_usage_locked(rows, total, requests, title):
-    clean = []
-    for r in rows or []:
-        model = str(r.get("model") or "?")
-        if model == "?":
-            continue
-        clean.append((model, int(r.get("tokens_total") or 0),
-                      int(r.get("requests") or 0)))
-    clean.sort(key=lambda x: x[1], reverse=True)
-    _STATE["rows"] = clean[:6]
-    _STATE["total"] = int(total or 0)
-    _STATE["requests"] = int(requests or 0)
-    _STATE["title"] = str(title or "今日模型用量")
-    _STATE["updated"] = time.time()
-
-
 def set_usage(rows, total, requests, title="今日模型用量"):
-    """Thread-safe usage cache; safe before/after the overlay has started."""
+    """Cache usage rows.  Safe to call from the bridge or tooltip worker."""
     try:
-        with _LOCK:
-            _set_usage_locked(rows, total, requests, title)
-        hwnd = _hwnd
-        if hwnd and _READY.is_set():
-            user32 = _dlls()[0]
-            user32.PostMessageW(hwnd, WM_NULL, None, None)
+        clean = []
+        for row in rows or []:
+            model = str(row.get("model") or "?")
+            if model == "?":
+                continue
+            clean.append((model, int(row.get("tokens_total") or 0),
+                          int(row.get("requests") or 0)))
+        clean.sort(key=lambda item: item[1], reverse=True)
+        with _STATE_LOCK:
+            _STATE["rows"] = clean[:6]
+            _STATE["total"] = int(total or 0)
+            _STATE["requests"] = int(requests or 0)
+            _STATE["title"] = str(title or "今日模型用量")
+            _STATE["updated"] = time.time()
     except Exception as e:
         log.debug("overlay set_usage failed: %s", e)
 
 
-def _argb(hex_color, alpha=255):
-    r = (hex_color >> 16) & 255
-    g = (hex_color >> 8) & 255
-    b = hex_color & 255
+def _argb(rgb, alpha=255):
+    r = (rgb >> 16) & 255
+    g = (rgb >> 8) & 255
+    b = rgb & 255
     return (int(alpha) << 24) | (r << 16) | (g << 8) | b
 
 
-def _fmt_tokens(n):
-    n = int(n or 0)
-    if n >= 100000000:
-        s = "%.2f" % (n / 100000000.0)
-    elif n >= 10000:
-        s = "%.1f" % (n / 10000.0)
+def _fmt_tokens(value):
+    value = int(value or 0)
+    if value >= 100000000:
+        text = "%.2f" % (value / 100000000.0)
+        suffix = " 亿"
+    elif value >= 10000:
+        text = "%.1f" % (value / 10000.0)
+        suffix = " 万"
     else:
-        return str(n)
-    if s.endswith("0"):
-        s = s[:-2]
-    return s + (" 亿" if n >= 100000000 else " 万")
+        return str(value)
+    if text.endswith("0"):
+        text = text[:-2]
+    return text + suffix
+
+
+def _family(gdiplus):
+    """Use the screenshot's UI family; YaHei explicitly covers CJK text."""
+    global _FAMILY
+    if _FAMILY is not None:
+        return _FAMILY
+    family = ctypes.c_void_p()
+    for name in ("Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI"):
+        if gdiplus.GdipCreateFontFamilyFromName(name, None, ctypes.byref(family)) == 0:
+            _FAMILY = family
+            return family
+    gdiplus.GdipGetGenericFontFamilySansSerif(ctypes.byref(family))
+    _FAMILY = family
+    return family
+
+
+def _font(gdiplus, size, style=FONT_REGULAR, cjk=False):
+    key = ("cjk" if cjk else "latin", float(size), int(style))
+    font = _FONT_CACHE.get(key)
+    if font:
+        return font
+    if cjk:
+        family = ctypes.c_void_p()
+        status = gdiplus.GdipCreateFontFamilyFromName("Microsoft YaHei UI", None,
+                                                      ctypes.byref(family))
+        if status != 0:
+            family = _family(gdiplus)
+    else:
+        family = _family(gdiplus)
+    result = ctypes.c_void_p()
+    if gdiplus.GdipCreateFont(family, float(size), int(style), UNIT_PIXEL,
+                              ctypes.byref(result)) != 0:
+        raise OSError("GdipCreateFont failed")
+    _FONT_CACHE[key] = result
+    return result
+
+
+def _format(gdiplus, align=STRING_ALIGNMENT_NEAR):
+    key = int(align)
+    fmt = _FORMAT_CACHE.get(key)
+    if fmt:
+        return fmt
+    result = ctypes.c_void_p()
+    if gdiplus.GdipCreateStringFormat(0, 0, ctypes.byref(result)) != 0:
+        raise OSError("GdipCreateStringFormat failed")
+    if key != STRING_ALIGNMENT_NEAR:
+        gdiplus.GdipSetStringFormatAlign(result, key)
+        gdiplus.GdipSetStringFormatLineAlign(result, 1)
+    _FORMAT_CACHE[key] = result
+    return result
+
+
+def _brush(gdiplus, rgb, alpha=255):
+    color = _argb(rgb, alpha)
+    brush = _BRUSH_CACHE.get(color)
+    if brush:
+        return brush
+    result = ctypes.c_void_p()
+    if gdiplus.GdipCreateSolidFill(color, ctypes.byref(result)) != 0:
+        raise OSError("GdipCreateSolidFill failed")
+    _BRUSH_CACHE[color] = result
+    return result
+
+
+def _pen(gdiplus, rgb, width, alpha=255):
+    color = _argb(rgb, alpha)
+    key = (color, float(width))
+    pen = _PEN_CACHE.get(key)
+    if pen:
+        return pen
+    result = ctypes.c_void_p()
+    if gdiplus.GdipCreatePen1(color, float(width), UNIT_PIXEL,
+                              ctypes.byref(result)) != 0:
+        raise OSError("GdipCreatePen1 failed")
+    _PEN_CACHE[key] = result
+    return result
+
+
+def _draw_text(gdiplus, graphics, text, font, fmt, rgb, x, y, w, h):
+    gdiplus.GdipDrawString(graphics, str(text), len(str(text)), font,
+                           ctypes.byref(_RECTF(float(x), float(y), float(w), float(h))),
+                           fmt, _brush(gdiplus, rgb))
+
+
+def _measure(gdiplus, graphics, text, font, fmt, width=10000.0):
+    layout = _RECTF(0.0, 0.0, float(width), 1000.0)
+    bounds = _RECTF()
+    gdiplus.GdipMeasureString(graphics, str(text), len(str(text)), font,
+                              ctypes.byref(layout), fmt, ctypes.byref(bounds),
+                              None, None)
+    return float(bounds.width)
+
+
+def _fit_text(gdiplus, graphics, text, font, fmt, max_width):
+    """Hard-guarantee that the name column never enters the percent column."""
+    text = str(text or "")
+    if _measure(gdiplus, graphics, text, font, fmt) <= max_width:
+        return text
+    for cut in range(len(text), 0, -1):
+        candidate = text[:cut].rstrip() + "…"
+        if _measure(gdiplus, graphics, candidate, font, fmt) <= max_width:
+            return candidate
+    return "…"
 
 
 def _rounded_path(gdiplus, x, y, w, h, radius):
     path = ctypes.c_void_p()
     if gdiplus.GdipCreatePath(0, ctypes.byref(path)) != 0:
         raise OSError("GdipCreatePath failed")
-    d = 2.0 * radius
-    gdiplus.GdipAddPathArc(path, x, y, d, d, 180.0, 90.0)
-    gdiplus.GdipAddPathArc(path, x + w - d, y, d, d, 270.0, 90.0)
-    gdiplus.GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0.0, 90.0)
-    gdiplus.GdipAddPathArc(path, x, y + h - d, d, d, 90.0, 90.0)
+    diameter = 2.0 * radius
+    gdiplus.GdipAddPathArc(path, x, y, diameter, diameter, 180.0, 90.0)
+    gdiplus.GdipAddPathArc(path, x + w - diameter, y, diameter, diameter, 270.0, 90.0)
+    gdiplus.GdipAddPathArc(path, x + w - diameter, y + h - diameter, diameter, diameter, 0.0, 90.0)
+    gdiplus.GdipAddPathArc(path, x, y + h - diameter, diameter, diameter, 90.0, 90.0)
     gdiplus.GdipClosePathFigure(path)
     return path
 
 
-class _Brush:
-    def __init__(self, gdiplus, color):
-        self.p = ctypes.c_void_p()
-        if gdiplus.GdipCreateSolidFill(color, ctypes.byref(self.p)) != 0:
-            raise OSError("GdipCreateSolidFill failed")
-
-    def close(self, gdiplus):
-        if self.p:
-            gdiplus.GdipDeleteBrush(self.p)
-            self.p = ctypes.c_void_p()
-
-
-class _Pen:
-    def __init__(self, gdiplus, color, width):
-        self.p = ctypes.c_void_p()
-        if gdiplus.GdipCreatePen1(color, float(width), UNIT_PIXEL,
-                                  ctypes.byref(self.p)) != 0:
-            raise OSError("GdipCreatePen1 failed")
-
-    def close(self, gdiplus):
-        if self.p:
-            gdiplus.GdipDeletePen(self.p)
-            self.p = ctypes.c_void_p()
-
-
-class _Font:
-    def __init__(self, gdiplus, size, bold=False):
-        family = ctypes.c_void_p()
-        status = gdiplus.GdipCreateFontFamilyFromName("Microsoft YaHei UI", None,
-                                                      ctypes.byref(family))
-        if status != 0:
-            status = gdiplus.GdipCreateFontFamilyFromName("Microsoft YaHei", None,
-                                                          ctypes.byref(family))
-        if status != 0:
-            gdiplus.GdipGetGenericFontFamilySansSerif(ctypes.byref(family))
-        self.family = family
-        self.p = ctypes.c_void_p()
-        if gdiplus.GdipCreateFont(family, float(size), FONT_BOLD if bold else FONT_REGULAR,
-                                  UNIT_PIXEL, ctypes.byref(self.p)) != 0:
-            raise OSError("GdipCreateFont failed")
-
-    def close(self, gdiplus):
-        if self.p:
-            gdiplus.GdipDeleteFont(self.p)
-            self.p = ctypes.c_void_p()
-        if self.family:
-            gdiplus.GdipDeleteFontFamily(self.family)
-            self.family = ctypes.c_void_p()
-
-
-class _Format:
-    def __init__(self, gdiplus, align=0):
-        self.p = ctypes.c_void_p()
-        if gdiplus.GdipCreateStringFormat(0, 0, ctypes.byref(self.p)) != 0:
-            raise OSError("GdipCreateStringFormat failed")
-        if align == 1:
-            gdiplus.GdipSetStringFormatAlign(self.p, STRING_ALIGNMENT_CENTER)
-            gdiplus.GdipSetStringFormatLineAlign(self.p, STRING_ALIGNMENT_CENTER)
-        elif align == 2:
-            gdiplus.GdipSetStringFormatAlign(self.p, 2)  # StringAlignmentFar/right
-
-    def close(self, gdiplus):
-        if self.p:
-            gdiplus.GdipDeleteStringFormat(self.p)
-            self.p = ctypes.c_void_p()
-
-
-def _draw_text(gdiplus, graphics, brush, font, fmt, text, x, y, w, h):
-    rect = _RECTF(float(x), float(y), float(w), float(h))
-    gdiplus.GdipDrawString(graphics, str(text), len(str(text)), font.p,
-                           ctypes.byref(rect), fmt.p, brush.p)
+def _tokens_or_zero(rows, index):
+    try:
+        return rows[index][1]
+    except (IndexError, TypeError):
+        return 0
 
 
 def _draw_card(gdiplus, graphics):
-    with _LOCK:
+    """Draw the complete opaque card in client coordinates."""
+    with _STATE_LOCK:
         rows = list(_STATE["rows"])
         total = int(_STATE["total"])
         requests = int(_STATE["requests"])
-        title = _STATE["title"]
 
-    brushes = []
-    pens = []
-    fonts = []
-    formats = []
-    path = None
-    try:
-        # Fully opaque: semi-transparent tray cards become unreadable when the
-        # dashboard itself is underneath them.
-        bg = _Brush(gdiplus, _argb(0x17161F, 255))
-        border = _Brush(gdiplus, _argb(0x2A2933, 255))
-        ink = _Brush(gdiplus, _argb(0xE8E7ED))
-        sub = _Brush(gdiplus, _argb(0x9A99A5))
-        faint = _Brush(gdiplus, _argb(0x63626E))
-        bg_pen = _Pen(gdiplus, _argb(0x55546A), 1.4)
-        ring_pen = _Pen(gdiplus, _argb(0x26252E), 17.0)
-        brushes = [bg, border, ink, sub, faint]
-        pens = [bg_pen, ring_pen]
-        title_font = _Font(gdiplus, 17, True)
-        value_font = _Font(gdiplus, 15, True)
-        label_font = _Font(gdiplus, 10)
-        row_font = _Font(gdiplus, 11)
-        fonts = [title_font, value_font, label_font, row_font]
-        center_fmt = _Format(gdiplus, 1)
-        left_fmt = _Format(gdiplus)
-        right_fmt = _Format(gdiplus, 2)
-        formats = [center_fmt, left_fmt, right_fmt]
+    gdiplus.GdipSetSmoothingMode(graphics, SMOOTHING_ANTIALIAS)
+    gdiplus.GdipSetTextRenderingHint(graphics, TEXT_ANTIALIAS_CLEAR_TYPE)
 
-        path = _rounded_path(gdiplus, 0.5, 0.5, W - 1.0, H - 1.0, 22.0)
-        gdiplus.GdipFillPath(bg.p, path)
-        gdiplus.GdipDrawPath(bg_pen.p, path)
+    background = _rounded_path(gdiplus, 0.5, 0.5, W - 1.0, H - 1.0, 24.0)
+    gdiplus.GdipFillPath(_brush(gdiplus, CARD_RGB), background)
+    gdiplus.GdipDrawPath(_pen(gdiplus, CARD_BORDER_RGB, 1.4), background)
+    gdiplus.GdipDeletePath(background)
 
-        # Top title + compact live dot.  This reads as the dashboard card,
-        # not as a replacement for the ordinary tray tooltip.
-        _draw_text(gdiplus, graphics, ink, title_font, left_fmt, title, 20, 18, 174, 26)
-        dot = _Brush(gdiplus, _argb(0x39D353))
-        brushes.append(dot)
-        dot_path = _rounded_path(gdiplus, 181.0, 26.0, 8.0, 8.0, 4.0)
-        gdiplus.GdipFillPath(dot.p, dot_path)
-        gdiplus.GdipDeletePath(dot_path)
+    latin_title = _font(gdiplus, 18, FONT_BOLD_ITALIC)
+    cjk_title = _font(gdiplus, 17, FONT_BOLD_ITALIC, cjk=True)
+    left_fmt = _format(gdiplus, 0)
+    right_fmt = _format(gdiplus, STRING_ALIGNMENT_FAR)
+    center_fmt = _format(gdiplus, 1)
 
-        donut_x, donut_y, donut_w = 23.0, 65.0, 104.0
-        gdiplus.GdipDrawArc(graphics, ring_pen.p, donut_x, donut_y, donut_w, donut_w,
-                            -90.0, 360.0)
+    latin = "Codex Bridge"
+    cjk = " 使用统计"
+    latin_width = _measure(gdiplus, graphics, latin, latin_title, left_fmt)
+    gdiplus.GdipDrawString(graphics, latin, len(latin), latin_title,
+                           ctypes.byref(_RECTF(24.0, 17.0, 170.0, 28.0)),
+                           left_fmt, _brush(gdiplus, INK_RGB))
+    gdiplus.GdipDrawString(graphics, cjk, len(cjk), cjk_title,
+                           ctypes.byref(_RECTF(24.0 + latin_width, 18.0, 170.0, 28.0)),
+                           left_fmt, _brush(gdiplus, INK_RGB))
+    _draw_text(gdiplus, graphics, "今日", _font(gdiplus, 12, FONT_BOLD, cjk=True),
+               right_fmt, SUB_RGB, W - 92.0, 24.0, 68.0, 20.0)
+    gdiplus.GdipDrawLine(graphics, _pen(gdiplus, 0x302C3C, 1.0),
+                         24.0, 54.0, W - 24.0, 54.0)
 
-        subtotal = sum(r[1] for r in rows)
-        use_total = total or subtotal
-        off = 0.0
-        elapsed_ms = int(max(0.0, (time.perf_counter_ns() / 1000000.0) - _anim_start))
-        for i, (_model, tokens, _requests) in enumerate(rows[:6]):
-            frac = float(tokens) / use_total if use_total else 0.0
-            delay = i * STAGGER_MS
-            p = max(0.0, min(1.0, float(elapsed_ms - delay) / ANIM_MS))
-            # cubic-bezier(.2,.8,.2,1) approximation; just enough to match the
-            # dashboard feel while keeping the GDI+ layer dependency-free.
-            eased = p * p * (3.0 - 2.0 * p)
-            if frac <= 0.0:
-                continue
-            seg_pen = _Pen(gdiplus, PALETTE[i % len(PALETTE)], 17.0)
-            pens.append(seg_pen)
-            start = -90.0 + 360.0 * off
-            sweep = max(1.0, 360.0 * frac * eased)
-            gdiplus.GdipDrawArc(graphics, seg_pen.p, donut_x, donut_y,
-                                donut_w, donut_w, start, sweep)
-            off += frac
+    radius = 45.0
+    stroke = 17.0
+    cx, cy = 85.0, 136.0
+    gdiplus.GdipDrawArc(graphics, _pen(gdiplus, RING_TRACK_RGB, stroke),
+                        cx - radius, cy - radius, radius * 2.0, radius * 2.0,
+                        -90.0, 360.0)
+    subtotal = sum(item[1] for item in rows)
+    denominator = total or subtotal
+    offset = 0.0
+    elapsed_ms = max(0.0, time.perf_counter_ns() / 1000000.0 - _anim_start)
+    for index, (_model, tokens, _requests) in enumerate(rows[:6]):
+        fraction = float(tokens) / denominator if denominator else 0.0
+        if fraction <= 0.0:
+            continue
+        progress = max(0.0, min(1.0, (elapsed_ms - index * STAGGER_MS) / ANIM_MS))
+        eased = progress * progress * (3.0 - 2.0 * progress)
+        start = -90.0 + 360.0 * offset
+        sweep = max(1.0, 360.0 * fraction * eased)
+        gdiplus.GdipDrawArc(graphics, _pen(gdiplus, PALETTE[index % len(PALETTE)], stroke),
+                            cx - radius, cy - radius, radius * 2.0, radius * 2.0,
+                            start, sweep)
+        offset += fraction
 
-        _draw_text(gdiplus, graphics, ink, value_font, center_fmt,
-                   _fmt_tokens(total), donut_x, donut_y + 38.0, donut_w, 20)
-        _draw_text(gdiplus, graphics, faint, label_font, center_fmt,
-                   "tokens", donut_x, donut_y + 58.0, donut_w, 16)
+    _draw_text(gdiplus, graphics, _fmt_tokens(total), _font(gdiplus, 16, FONT_BOLD),
+               center_fmt, INK_RGB, cx - radius, cy - 21.0, radius * 2.0, 22.0)
+    _draw_text(gdiplus, graphics, "tokens", _font(gdiplus, 10, FONT_REGULAR, cjk=True),
+               center_fmt, FAINT_RGB, cx - radius, cy + 2.0, radius * 2.0, 15.0)
 
-        if rows:
-            y = 68.0
-            for i, (model, tokens, reqs) in enumerate(rows[:4]):
-                brush = _Brush(gdiplus, PALETTE[i % len(PALETTE)])
-                brushes.append(brush)
-                dot_path = _rounded_path(gdiplus, 142.0, y + 5.0, 8.0, 8.0, 4.0)
-                gdiplus.GdipFillPath(brush.p, dot_path)
-                gdiplus.GdipDeletePath(dot_path)
-                pct = (100.0 * tokens / use_total) if use_total else 0.0
-                _draw_text(gdiplus, graphics, sub, row_font, left_fmt,
-                           model, 158, y, 90, 17)
-                _draw_text(gdiplus, graphics, sub, row_font, right_fmt,
-                           "%.1f%%" % pct, 238, y, 32, 17)
-                y += 22.0
-            if len(rows) > 4:
-                _draw_text(gdiplus, graphics, faint, label_font, left_fmt,
-                           "+%d 个模型" % (len(rows) - 4), 158, y + 1, 104, 15)
-            _draw_text(gdiplus, graphics, ink, label_font, left_fmt,
-                       "%s 次 · %s" % (requests, _fmt_tokens(tokens if len(rows) == 1 else total)),
-                       142, 168, 128, 18)
-        else:
-            _draw_text(gdiplus, graphics, faint, row_font, center_fmt,
-                       "暂无模型数据", 138, 104, 132, 18)
+    row_font = _font(gdiplus, 11, FONT_REGULAR)
+    name_x = 172.0
+    name_width = 88.0
+    percent_width = 44.0
+    percent_x = W - 26.0 - percent_width
+    row_y = 92.0
+    for index, (model, _tokens, _requests) in enumerate(rows[:4]):
+        rgb = PALETTE[index % len(PALETTE)]
+        dot = _rounded_path(gdiplus, name_x - 14.0, row_y + 5.0, 8.0, 8.0, 4.0)
+        gdiplus.GdipFillPath(_brush(gdiplus, rgb), dot)
+        gdiplus.GdipDeletePath(dot)
+        safe_name = _fit_text(gdiplus, graphics, model, row_font, left_fmt, name_width)
+        _draw_text(gdiplus, graphics, safe_name, row_font, left_fmt,
+                   SUB_RGB, name_x, row_y, name_width, 18.0)
+        fraction = float(_tokens_or_zero(rows, index)) / denominator if denominator else 0.0
+        _draw_text(gdiplus, graphics, "%.1f%%" % (fraction * 100.0), row_font,
+                   right_fmt, SUB_RGB, percent_x, row_y, percent_width, 18.0)
+        row_y += 27.0
+    if not rows:
+        _draw_text(gdiplus, graphics, "暂无模型数据", _font(gdiplus, 11, FONT_REGULAR, cjk=True),
+                   left_fmt, FAINT_RGB, name_x, row_y + 12.0, 116.0, 18.0)
 
-        _draw_text(gdiplus, graphics, faint, label_font, left_fmt,
-                   "点击打开仪表盘", 20, 178, 118, 16)
-    finally:
-        if path:
-            gdiplus.GdipDeletePath(path)
-        for x in fonts:
-            x.close(gdiplus)
-        for x in formats:
-            x.close(gdiplus)
-        for x in pens:
-            x.close(gdiplus)
-        for x in brushes:
-            x.close(gdiplus)
+    gdiplus.GdipDrawLine(graphics, _pen(gdiplus, 0x302C3C, 1.0),
+                         24.0, 199.0, W - 24.0, 199.0)
+    summary = "%s 次 · %s" % (requests, _fmt_tokens(total))
+    _draw_text(gdiplus, graphics, summary, _font(gdiplus, 12, FONT_BOLD, cjk=True),
+               left_fmt, INK_RGB, 24.0, 210.0, 180.0, 22.0)
+    _draw_text(gdiplus, graphics, "点击打开仪表盘", _font(gdiplus, 11, FONT_REGULAR, cjk=True),
+               right_fmt, FAINT_RGB, W - 154.0, 213.0, 130.0, 19.0)
+    gdiplus.GdipFlush(graphics, 1)
 
 
-def _paint_layered(hwnd):
-    """Render directly into a premultiplied DIB for UpdateLayeredWindow."""
-    user32, _kernel32, gdi32, gdiplus = _dlls()
-    bitmap = ctypes.c_void_p()
+def _paint_window(hwnd):
+    """Double-buffer opaque GDI+ output, then BitBlt it to the window."""
+    user32, _kernel32, gdi32, gdiplus, _dwmapi, _post_user32 = _dlls()
+    hwnd_dc = None
+    mem_dc = None
+    bitmap = None
+    old_bitmap = None
     graphics = ctypes.c_void_p()
-    hbitmap = ctypes.c_void_p()
-    bits = ctypes.c_void_p()
-    hdc_mem = None
-    hdc_screen = None
-    old = None
     try:
-        hdc_screen = user32.GetDC(hwnd)
-        hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
-        user32.ReleaseDC(hwnd, hdc_screen)
-        hdc_screen = None
-
-        bmi = _BITMAPINFO()
-        bmi.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
-        bmi.bmiHeader.biWidth = W
-        bmi.bmiHeader.biHeight = -H          # top-down
-        bmi.bmiHeader.biPlanes = 1
-        bmi.bmiHeader.biBitCount = 32
-        bmi.bmiHeader.biCompression = 0      # BI_RGB
-        hbitmap = gdi32.CreateDIBSection(hdc_mem, ctypes.byref(bmi), 0,
-                                         ctypes.byref(bits), None, 0)
-        if not hbitmap or not bits:
-            raise OSError("CreateDIBSection failed")
-
-        stride = W * 4
-        if gdiplus.GdipCreateBitmapFromScan0(W, H, stride, PIXEL_FORMAT_32BPP_ARGB,
-                                             bits, ctypes.byref(bitmap)) != 0:
-            raise OSError("GdipCreateBitmapFromScan0 failed")
-        if gdiplus.GdipGetImageGraphicsContext(bitmap, ctypes.byref(graphics)) != 0:
-            raise OSError("GdipGetImageGraphicsContext failed")
-        gdiplus.GdipSetSmoothingMode(graphics, SMOOTHING_ANTIALIAS)
-        gdiplus.GdipSetTextRenderingHint(graphics, TEXT_ANTIALIAS_GRIDFIT)
+        hwnd_dc = user32.GetDC(hwnd)
+        mem_dc = gdi32.CreateCompatibleDC(hwnd_dc)
+        bitmap = gdi32.CreateCompatibleBitmap(hwnd_dc, W, H)
+        old_bitmap = gdi32.SelectObject(mem_dc, bitmap)
+        if gdiplus.GdipCreateFromHDC(mem_dc, ctypes.byref(graphics)) != 0:
+            raise OSError("GdipCreateFromHDC failed")
         _draw_card(gdiplus, graphics)
-        gdiplus.GdipFlush(graphics, 1)       # GdipFlushWorld
-
-        # GDI+ writes straight alpha; UpdateLayeredWindow requires premultiplied
-        # alpha.  GdipCreateHBITMAPFromBitmap does not preserve this reliably,
-        # which is why the card previously appeared to have no background.
-        pixels = ctypes.cast(bits, ctypes.POINTER(ctypes.c_ubyte))
-        nbytes = W * H * 4
-        for i in range(0, nbytes, 4):
-            alpha = pixels[i + 3]
-            if alpha == 255 or alpha == 0:
-                continue
-            pixels[i] = pixels[i] * alpha // 255
-            pixels[i + 1] = pixels[i + 1] * alpha // 255
-            pixels[i + 2] = pixels[i + 2] * alpha // 255
-
-        old = gdi32.SelectObject(hdc_mem, hbitmap)
-
-        dst = _POINT(_STATE.get("_x", 0), _STATE.get("_y", 0))
-        src = _POINT(0, 0)
-        size = _SIZE(W, H)
-        blend = _BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
-        if not user32.UpdateLayeredWindow(hwnd, None, ctypes.byref(dst),
-                                          ctypes.byref(size), hdc_mem,
-                                          ctypes.byref(src), 0,
-                                          ctypes.byref(blend), ULW_ALPHA):
-            raise OSError("UpdateLayeredWindow failed")
+        if not gdi32.BitBlt(hwnd_dc, 0, 0, W, H, mem_dc, 0, 0, SRCCOPY):
+            raise OSError("BitBlt failed")
     finally:
-        if old and hdc_mem:
-            gdi32.SelectObject(hdc_mem, old)
         if graphics:
             gdiplus.GdipDeleteGraphics(graphics)
-            graphics = ctypes.c_void_p()
+        if old_bitmap and mem_dc:
+            gdi32.SelectObject(mem_dc, old_bitmap)
         if bitmap:
-            # Must release the external DIB memory before selecting/deleting it.
-            gdiplus.GdipDisposeImage(bitmap)
-            bitmap = ctypes.c_void_p()
-        if hdc_mem:
-            gdi32.DeleteDC(hdc_mem)
-        if hbitmap:
-            gdi32.DeleteObject(hbitmap)
-        if graphics:
-            gdiplus.GdipDeleteGraphics(graphics)
-        if bitmap:
-            gdiplus.GdipDisposeImage(bitmap)
+            gdi32.DeleteObject(bitmap)
+        if mem_dc:
+            gdi32.DeleteDC(mem_dc)
+        if hwnd_dc:
+            user32.ReleaseDC(hwnd, hwnd_dc)
 
 
 def _cursor_in_rect(x, y, left, top, right, bottom, margin=0):
@@ -687,25 +626,24 @@ def _cursor_in_rect(x, y, left, top, right, bottom, margin=0):
 
 
 def _still_wanted():
-    """Keep the card while the cursor is over it or back on the tray icon."""
     if not _hwnd or not _anchor:
         return False
     user32 = _dlls()[0]
-    pt = _POINT()
-    if not user32.GetCursorPos(ctypes.byref(pt)):
+    point = _POINT()
+    if not user32.GetCursorPos(ctypes.byref(point)):
         return False
-    rect = (_POINT * 2)()
+    rect = _RECT()
     if user32.GetWindowRect(_hwnd, ctypes.byref(rect)):
-        left, top = rect[0].x, rect[0].y
-        right, bottom = rect[1].x, rect[1].y
-        if _cursor_in_rect(pt.x, pt.y, left, top, right, bottom, 10):
+        if _cursor_in_rect(point.x, point.y, rect.left, rect.top, rect.right, rect.bottom, 10):
             return True
-    ax, ay = _anchor
-    return abs(pt.x - ax) <= ANCHOR_RADIUS and abs(pt.y - ay) <= ANCHOR_RADIUS
+    anchor_x, anchor_y = _anchor
+    return abs(point.x - anchor_x) <= ANCHOR_RADIUS and abs(point.y - anchor_y) <= ANCHOR_RADIUS
 
 
 def _hide(user32):
     global _mouse_tracked, _anchor
+    if not _hwnd:
+        return
     user32.KillTimer(_hwnd, ctypes.c_void_p(1))
     user32.KillTimer(_hwnd, ctypes.c_void_p(2))
     user32.ShowWindow(_hwnd, SW_HIDE)
@@ -714,34 +652,31 @@ def _hide(user32):
 
 
 def _show_at(user32, x, y):
-    global _shown_at, _anim_start, _anchor
+    global _anim_start, _anchor
     screen_w = user32.GetSystemMetrics(SM_CXSCREEN)
     screen_h = user32.GetSystemMetrics(SM_CYSCREEN)
-    left = min(max(8, x - W + 36), screen_w - W - 8)
+    left = min(max(8, x - W + 42), screen_w - W - 8)
     top = max(8, y - H - 18)
-    _STATE["_x"] = left
-    _STATE["_y"] = top
     _anchor = (x, y)
     _anim_start = time.perf_counter_ns() / 1000000.0
-    _shown_at = time.time()
     user32.SetWindowPos(_hwnd, ctypes.c_void_p(HWND_TOPMOST), left, top, W, H,
                         SWP_NOACTIVATE | SWP_SHOWWINDOW)
-    _paint_layered(_hwnd)
+    _paint_window(_hwnd)
+    user32.InvalidateRect(_hwnd, None, 0)
     user32.SetTimer(_hwnd, ctypes.c_void_p(1), FRAME_MS, None)
     user32.SetTimer(_hwnd, ctypes.c_void_p(2), CHECK_MS, None)
 
 
 def show(x, y):
-    """Public entry called by the tray after its 500 ms hover debounce."""
+    """Called by tray_icon after the 500 ms hover debounce."""
     hwnd = _hwnd
     if not hwnd or not _READY.wait(0.15):
         return False
     try:
-        user32 = _dlls()[0]
-        # Marshal the coordinates into the overlay's message loop.  All
-        # painting/timer ownership therefore stays on one thread.
-        lp = (max(0, min(32767, int(y))) << 16) | max(0, min(65535, int(x) & 0xFFFF))
-        return bool(user32.PostMessageW(hwnd, WM_APP_SHOW, None, ctypes.c_void_p(lp)))
+        post_user32 = _dlls()[5]
+        packed = (max(0, min(32767, int(y))) << 16) | max(0, min(65535, int(x) & 0xFFFF))
+        return bool(post_user32.PostMessageW(hwnd, WM_APP_SHOW, ctypes.c_void_p(0),
+                                             ctypes.c_void_p(packed)))
     except Exception as e:
         log.debug("overlay show failed: %s", e)
         return False
@@ -753,28 +688,35 @@ def _wndproc(hwnd, msg, wp, lp):
     if msg == WM_APP_SHOW:
         try:
             packed = int(lp or 0)
-            x = packed & 0xFFFF
-            y = (packed >> 16) & 0xFFFF
-            _show_at(user32, x, y)
+            _show_at(user32, packed & 0xFFFF, (packed >> 16) & 0xFFFF)
         except Exception as e:
             log.warning("overlay show failed: %s", e)
         return 0
+    if msg == WM_PAINT:
+        try:
+            _paint_window(hwnd)
+        except Exception as e:
+            log.warning("overlay paint failed: %s", e)
+        user32.ValidateRect(hwnd, None)
+        return 0
+    if msg == WM_ERASEBKGND:
+        return 1
     if msg == WM_TIMER:
-        tid = (wp or 0)
-        if tid == 1:
+        timer_id = int(wp or 0)
+        if timer_id == 1:
             if time.perf_counter_ns() / 1000000.0 - _anim_start <= ANIM_MS + STAGGER_MS * 6:
                 try:
-                    _paint_layered(hwnd)
+                    _paint_window(hwnd)
                 except Exception as e:
                     log.warning("overlay animation stopped: %s", e)
                     _hide(user32)
             else:
                 user32.KillTimer(hwnd, ctypes.c_void_p(1))
                 try:
-                    _paint_layered(hwnd)
+                    _paint_window(hwnd)
                 except Exception:
                     pass
-        elif tid == 2 and not _still_wanted():
+        elif timer_id == 2 and not _still_wanted():
             _hide(user32)
         return 0
     if msg == WM_NCHITTEST:
@@ -791,27 +733,26 @@ def _wndproc(hwnd, msg, wp, lp):
         _hide(user32)
         return 0
     if msg == WM_MOUSEMOVE and not _mouse_tracked:
-        tme = _TRACKMOUSEEVENT(ctypes.sizeof(_TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0)
-        if user32.TrackMouseEvent(ctypes.byref(tme)):
+        track = _TRACKMOUSEEVENT(ctypes.sizeof(_TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0)
+        if user32.TrackMouseEvent(ctypes.byref(track)):
             _mouse_tracked = True
         return 0
     if msg == WM_MOUSELEAVE:
-        # The checker timer keeps the card if the cursor crosses back to the
-        # tray icon; otherwise close immediately for a normal popover feel.
         if not _still_wanted():
             _hide(user32)
         _mouse_tracked = False
         return 0
-    if msg in (WM_CLOSE,):
+    if msg == WM_CLOSE:
         user32.ShowWindow(hwnd, SW_HIDE)
         return 0
     return user32.DefWindowProcW(hwnd, msg, wp, lp)
 
 
 def _run():
-    global _hwnd, _proc, _class_atom
+    global _hwnd, _proc
+    gdiplus = None
     try:
-        user32, kernel32, _gdi32, gdiplus = _dlls()
+        user32, kernel32, gdi32, gdiplus, dwmapi, _post_user32 = _dlls()
         token = ctypes.c_void_p()
         startup = _GdiplusStartupInput(1, None, 0, 0)
         if gdiplus.GdiplusStartup(ctypes.byref(token), ctypes.byref(startup), None) != 0:
@@ -820,37 +761,44 @@ def _run():
 
         _proc = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_void_p, ctypes.c_uint,
                                    ctypes.c_void_p, ctypes.c_void_p)(_wndproc)
-        h_inst = kernel32.GetModuleHandleW(None)
+        instance = kernel32.GetModuleHandleW(None)
         cursor = user32.LoadCursorW(None, ctypes.c_void_p(IDC_ARROW))
         cls = _WNDCLASSW()
         cls.style = CS_HREDRAW | CS_VREDRAW
         cls.lpfnWndProc = ctypes.cast(_proc, ctypes.c_void_p)
-        cls.hInstance = h_inst
+        cls.hInstance = instance
         cls.hCursor = cursor
-        cls.lpszClassName = "CodexBridgeUsageOverlay"
-        atom = user32.RegisterClassW(ctypes.byref(cls))
-        if not atom:
+        cls.lpszClassName = "CodexBridgeUsageCard"
+        if not user32.RegisterClassW(ctypes.byref(cls)):
             raise OSError("RegisterClassW(overlay) failed")
-        _class_atom = atom
-        hwnd = user32.CreateWindowExW(EX_STYLE, "CodexBridgeUsageOverlay",
-                                      "Codex Bridge 用量", WS_POPUP,
-                                      0, 0, W, H, None, None, h_inst, None)
+
+        hwnd = user32.CreateWindowExW(EX_STYLE, "CodexBridgeUsageCard",
+                                      "Codex Bridge Usage", WS_POPUP,
+                                      0, 0, W, H, None, None, instance, None)
         if not hwnd:
             raise OSError("CreateWindowExW(overlay) failed")
         _hwnd = hwnd
+
+        # Win11 rounded card.  If DWM refuses, the card simply has square corners.
+        dark_mode = ctypes.c_int(1)
+        dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                                     ctypes.byref(dark_mode), ctypes.sizeof(dark_mode))
+        corner = ctypes.c_int(DWMWCP_ROUND)
+        dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                                     ctypes.byref(corner), ctypes.sizeof(corner))
         _READY.set()
 
-        q = _MSG()
-        while user32.GetMessageW(ctypes.byref(q), None, 0, 0) > 0:
-            user32.TranslateMessage(ctypes.byref(q))
-            user32.DispatchMessageW(ctypes.byref(q))
+        queue = _MSG()
+        while user32.GetMessageW(ctypes.byref(queue), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(queue))
+            user32.DispatchMessageW(ctypes.byref(queue))
     except Exception as e:
-        log.warning("usage overlay unavailable: %s", e)
+        log.warning("usage card unavailable: %s", e)
     finally:
         _READY.clear()
         globals()["_hwnd"] = None
         token = globals().get("_TOKEN")
-        if token:
+        if token and gdiplus:
             try:
                 gdiplus.GdiplusShutdown(token)
             except Exception:
@@ -858,7 +806,6 @@ def _run():
 
 
 def start(url):
-    """Start the overlay message thread; failures are logged and ignored."""
     global _THREAD, _url
     if os.name != "nt":
         return
@@ -866,7 +813,7 @@ def start(url):
     with _THREAD_LOCK:
         if _THREAD is not None and _THREAD.is_alive():
             return
-        _THREAD = threading.Thread(target=_run, daemon=True, name="tray-usage-overlay")
+        _THREAD = threading.Thread(target=_run, daemon=True, name="tray-usage-card")
         _THREAD.start()
 
 
@@ -875,6 +822,6 @@ def stop():
     if hwnd:
         try:
             user32 = _dlls()[0]
-            user32.PostMessageW(hwnd, WM_CLOSE, None, None)
+            user32.PostMessageW(hwnd, WM_CLOSE, ctypes.c_void_p(0), ctypes.c_void_p(0))
         except Exception:
             pass
