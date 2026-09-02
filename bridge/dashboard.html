@@ -120,6 +120,12 @@ tr.flash td{animation:rowFlash 1.8s ease-out}
 .btn{background:linear-gradient(135deg,var(--v1),#9a5ef7);border:0;color:#fff;padding:8px 22px;border-radius:10px;cursor:pointer;font-size:13px;font-weight:650;transition:filter .15s,transform .15s}
 .btn:hover{filter:brightness(1.1);transform:translateY(-1px)}
 .btn.ghost{background:#2c2b36;color:var(--ink);border:1px solid var(--border)}
+.btn-bal-refresh{display:inline-flex;align-items:center;gap:5px;background:#23222d;border:1px solid #363445;color:var(--sub);padding:3px 9px;border-radius:7px;font-size:11.5px;font-weight:600;cursor:pointer;transition:all .15s;line-height:1;margin-right:10px}
+.btn-bal-refresh:hover{background:#2b2938;border-color:var(--v1);color:var(--ink)}
+.btn-bal-refresh svg{transition:transform .4s ease}
+.btn-bal-refresh.spinning svg{animation:balSpin .7s linear infinite}
+.btn-bal-refresh.spinning{pointer-events:none;opacity:.7}
+@keyframes balSpin{100%{transform:rotate(360deg)}}
 .tag{display:inline-block;font-size:11px;padding:2px 9px;border-radius:9px;background:rgba(139,108,247,.16);color:#c3aefb;margin-left:8px;vertical-align:1px}
 .tag.r{background:rgba(242,109,106,.16);color:#ff9d9a}
 .kv{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #242329;font-size:12.5px}
@@ -182,7 +188,7 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
 <div id="page-dash">
   <div class="cards" id="statCards"><div class="skel" style="grid-column:1/-1"></div></div>
   <div class="panel">
-    <h3>Coding Plan 余额<span class="right">Gemini · Kimi · 智谱 · MiniMax 订阅额度与重置倒计时</span></h3>
+    <h3>Coding Plan 余额<span class="right"><button class="btn-bal-refresh" id="btnRefreshBal" onclick="refreshBalanceOnly(this)" title="强制穿透缓存，实时刷新所有供应商余额"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-1.19"/></svg><span>刷新余额</span></button>Gemini · Kimi · 智谱 · MiniMax 订阅额度与重置倒计时</span></h3>
     <div class="bal-grid" id="balanceCards"><div class="skel" style="height:120px"></div><div class="skel" style="height:120px"></div><div class="skel" style="height:120px"></div></div>
   </div>
   <div class="panel"><h3>Token 趋势<span class="right">按天 · 分模型 · 悬停查看明细</span></h3><div class="svgwrap" id="trend"></div><div class="legend" id="trendLegend" style="flex-direction:row;gap:18px;margin-top:10px;flex-wrap:wrap"></div></div>
@@ -1089,6 +1095,19 @@ function renderBalance(d){
 async function loadBalance(force){
   try{const d=await api("/dashboard/api/balance"+(force?"?refresh=true":""));lastBal=d;renderBalance(d)}
   catch(e){const wrap=$("#balanceCards");if(wrap)wrap.innerHTML=`<div class="skel" style="grid-column:1/-1;height:60px"></div>`}
+}
+async function refreshBalanceOnly(btn){
+  const el = btn || $("#btnRefreshBal");
+  if(el) el.classList.add("spinning");
+  balAnimPending = true;
+  try{
+    await loadBalance(true);
+    toast("Coding Plan 余额已实时刷新");
+  }catch(e){
+    toast("刷新失败: " + (e.message || "未知错误"));
+  }finally{
+    if(el) el.classList.remove("spinning");
+  }
 }
 
 // 页面初始化
