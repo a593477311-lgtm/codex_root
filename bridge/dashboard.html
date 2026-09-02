@@ -99,7 +99,7 @@ tbody tr:hover td{background:#242329}
 #tip .row{display:flex;justify-content:space-between;gap:14px;padding:1px 0;color:#cfced7}
 #tip .row span:last-child{font-variant-numeric:tabular-nums;font-weight:600;color:var(--ink)}
 @keyframes growBar{from{transform:scaleY(0)}to{transform:scaleY(1)}}
-.tbar{transform-box:fill-box;transform-origin:bottom;animation:growBar .55s cubic-bezier(.2,.8,.3,1) both}
+.tbar{transform-box:fill-box;transform-origin:bottom;animation:growBar .55s cubic-bezier(.2,.8,.3,1) both;transition:opacity .18s,filter .18s}
 @keyframes fadeCell{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:scale(1)}}
 .hcell{transform-box:fill-box;transform-origin:center;animation:fadeCell .4s both}
 @keyframes rowFlash{0%{background:rgba(57,211,83,.18)}100%{background:transparent}}
@@ -453,12 +453,30 @@ function renderTrend(daily){
   const lstep=Math.max(1,Math.ceil(n/10));
   ds.forEach((d,i)=>{const k=dayKey(d);const v=daily[k];const x=padL+i*step+(step-bw)/2;let y=H;
     if(v){mArr.forEach((m,j)=>{const val=v.models[m]||0;const h=(val/max)*plotH;y-=h;
-      if(h>0.4)bars+=`<rect class="tbar" x="${x}" y="${y}" width="${bw}" height="${h}" fill="${color(m)}"/>`})}
+      if(h>0.4)bars+=`<rect class="tbar" data-model="${m}" x="${x}" y="${y}" width="${bw}" height="${h}" fill="${color(m)}"/>`})}
     if(i%lstep===0||i===n-1){const anchor=(i===n-1&&n>1)?"end":"middle";const tx=anchor==="end"?x+bw:x+bw/2;
       xaxis+=`<text x="${tx}" y="${H+16}" fill="#63626e" font-size="10" text-anchor="${anchor}">${d.getMonth()+1}/${d.getDate()}</text>`}});
   if(pendingAnim)requestAnimationFrame(()=>gsap.from("#trendSvg .tbar",{scaleY:0,transformOrigin:"50% 100%",duration:0.6,stagger:{each:0.02,from:"start"},ease:"power3.out",clearProps:"transform"}));
   $("#trend").innerHTML=`<svg id="trendSvg" width="${W}" height="${H+28}" style="display:block;max-width:100%">${yaxis}${bars}${xaxis}<line id="xline" x1="0" y1="10" x2="0" y2="${H}" stroke="#55546a" stroke-dasharray="3 3" style="display:none"/></svg>`;
-  $("#trendLegend").innerHTML=mArr.map(m=>`<div class="row"><span class="dot" style="background:${color(m)}"></span>${m}</div>`).join("");
+  $("#trendLegend").innerHTML=mArr.map(m=>`<div class="row" data-model="${m}"><span class="dot" style="background:${color(m)}"></span>${m}</div>`).join("");
+
+  const tbars=[...$("#trendSvg").querySelectorAll(".tbar")],trows=[...$("#trendLegend").querySelectorAll(".row")];
+  function hlTrend(targetModel,on){
+    tbars.forEach(b=>{
+      b.style.opacity=on?(b.dataset.model===targetModel?1:0.2):1;
+      b.style.filter=on&&(b.dataset.model===targetModel)?"brightness(1.2)":"none";
+    });
+    trows.forEach(r=>r.classList.toggle("hl",on&&r.dataset.model===targetModel));
+  }
+  trows.forEach(r=>{
+    r.addEventListener("mouseenter",()=>hlTrend(r.dataset.model,true));
+    r.addEventListener("mouseleave",()=>hlTrend("",false));
+  });
+  tbars.forEach(b=>{
+    b.addEventListener("mouseenter",()=>hlTrend(b.dataset.model,true));
+    b.addEventListener("mouseleave",()=>hlTrend("",false));
+  });
+
   const svgEl=$("#trendSvg"),xl=svgEl.querySelector("#xline"),W0=W;
   svgEl.addEventListener("mousemove",e=>{
     const r=svgEl.getBoundingClientRect();const sx=r.width/W0;
