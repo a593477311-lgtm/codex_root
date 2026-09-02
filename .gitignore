@@ -20,6 +20,8 @@ bridge/*.log.*
 *.sqlite-shm
 *.sqlite-wal
 bridge/bridge_stats.db
+*.db-journal
+.research_codex/
 
 # Temporary & backup files
 *.bak
