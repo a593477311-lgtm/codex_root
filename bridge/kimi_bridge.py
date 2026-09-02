@@ -93,6 +93,27 @@ SPECIAL_PARAMS = {
     },
 }
 
+# Non-OpenAI models do not reliably know Codex's V4A patch language.  The
+# original freeform tool carries a Lark grammar, but that grammar is not sent
+# upstream after converting the tool to a plain function.  Keep the key syntax
+# in the model-visible description, especially for Gemini.
+APPLY_PATCH_FORMAT_GUIDE = """
+
+Patch format (required):
+*** Begin Patch
+*** Add File: path/to/new-file
++file contents
+*** Update File: path/to/existing-file
+@@ optional context
+-old line
++new line
+*** Delete File: path/to/file
+*** End Patch
+
+Use exactly Add File, Update File, or Delete File. Never use Create File,
+New File, Modify File, or JSON wrapping.
+"""
+
 # function-name -> namespace, learned from traffic, persisted to disk
 name_to_ns: dict = {}
 
@@ -208,6 +229,8 @@ def normalize_tool(t: dict) -> dict:
             "required": ["input"],
             "additionalProperties": False,
         }
+        if name == "apply_patch":
+            desc = desc.rstrip() + APPLY_PATCH_FORMAT_GUIDE
         log.info("  convert tool type 'custom' -> function '%s' (freeform rewrite on response)", name)
         stats.note_event("tool_convert", f"custom -> {name}")
         return {"type": "function", "name": name, "description": desc, "parameters": params}
