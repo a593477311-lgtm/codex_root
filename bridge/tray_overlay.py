@@ -88,7 +88,7 @@ def _get_model_color(model_name):
         return 0x8E8A9E
     return MODEL_COLORS.get(model_name, 0x8E8A9E)
 
-W = 352
+W = 362
 H = 266
 ANIM_MS = 620
 STAGGER_MS = 75
@@ -434,16 +434,14 @@ def _argb(rgb, alpha=255):
 def _fmt_tokens(value):
     value = int(value or 0)
     if value >= 100000000:
-        text = "%.2f" % (value / 100000000.0)
-        suffix = " 亿"
+        val = value / 100000000.0
+        text = ("%.2f" % val).rstrip("0").rstrip(".")
+        return text + " 亿"
     elif value >= 10000:
-        text = "%.1f" % (value / 10000.0)
-        suffix = " 万"
-    else:
-        return str(value)
-    if text.endswith("0"):
-        text = text[:-2]
-    return text + suffix
+        val = value / 10000.0
+        text = ("%.1f" % val).rstrip("0").rstrip(".")
+        return text + " 万"
+    return str(value)
 
 
 def _family(gdiplus):
@@ -685,7 +683,7 @@ def _draw_card(gdiplus, graphics):
 
     row_y = 60.0
     list_left = 152.0
-    name_w = 118.0
+    name_w = 132.0
     pct_w = 45.0
     pct_x = W - 20.0 - pct_w
 
@@ -700,7 +698,7 @@ def _draw_card(gdiplus, graphics):
         _draw_text(gdiplus, graphics, safe_name, f_model, left_fmt,
                    0xE1DFEA, list_left + 15.0, row_y - 1.0, name_w, 18.0)
         # Sub: tokens · requests
-        tok_fmt = ("%.1f 万" % (_tokens / 10000.0)) if _tokens < 100000000 else ("%.2f 亿" % (_tokens / 100000000.0))
+        tok_fmt = _fmt_tokens(_tokens)
         sub_text = "%s · %d次" % (tok_fmt, _requests)
         _draw_text(gdiplus, graphics, sub_text, f_sub, left_fmt,
                    0x757288, list_left + 15.0, row_y + 15.0, name_w, 15.0)
@@ -720,7 +718,7 @@ def _draw_card(gdiplus, graphics):
 
     # 4. Footer
     f_foot_l = _font(gdiplus, 10.0, FONT_REGULAR, cjk=True)
-    f_foot_r = _font(gdiplus, 10.5, FONT_BOLD, cjk=True)
+    f_foot_r = _font(gdiplus, 10.0, FONT_BOLD, cjk=True)
 
     if hit_rate is not None:
         foot_left_txt = "%d 次 · 命中率 %.1f%%" % (requests, hit_rate * 100.0)
@@ -728,9 +726,9 @@ def _draw_card(gdiplus, graphics):
         foot_left_txt = "%d 次请求" % requests
 
     _draw_text(gdiplus, graphics, foot_left_txt, f_foot_l, left_fmt,
-               SUB_RGB, 20.0, 224.0, 180.0, 20.0)
-    _draw_text(gdiplus, graphics, "打开仪表盘 ↗", f_foot_r, right_fmt,
-               ACCENT_RGB, W - 20.0 - 110.0, 223.0, 110.0, 20.0)
+               SUB_RGB, 20.0, 224.0, 190.0, 22.0)
+    _draw_text(gdiplus, graphics, "打开仪表盘 →", f_foot_r, right_fmt,
+               ACCENT_RGB, W - 20.0 - 120.0, 224.0, 120.0, 22.0)
 
     gdiplus.GdipFlush(graphics, 1)
 
