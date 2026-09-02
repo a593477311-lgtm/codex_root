@@ -73,14 +73,20 @@ SUB_RGB = 0x8E8A9E
 FAINT_RGB = 0x6E6B80
 ACCENT_RGB = 0x7C65C1
 
-PALETTE = (
-    0x7C65C1,
-    0x22C55E,
-    0x06B6D4,
-    0xF59E0B,
-    0xEC4899,
-    0x8B5CF6,
-)
+MODEL_COLORS = {
+    "GLM-5.3-Flash": 0x06B6D4,
+    "GLM-5.3": 0x3B82F6,
+    "gemini-3.7-flash-high": 0x22C55E,
+    "MiniMax-M3": 0xF59E0B,
+    "k3": 0x8B5CF6,
+    "GLM-5.2": 0x64748B,
+}
+
+
+def _get_model_color(model_name):
+    if not model_name:
+        return 0x8E8A9E
+    return MODEL_COLORS.get(model_name, 0x8E8A9E)
 
 W = 352
 H = 266
@@ -639,6 +645,7 @@ def _draw_card(gdiplus, graphics):
         fraction = float(tokens) / denominator if denominator else 0.0
         if fraction <= 0.0:
             continue
+        rgb = _get_model_color(_model)
         progress = max(0.0, min(1.0, (elapsed_ms - index * STAGGER_MS) / ANIM_MS))
         eased = progress * progress * (3.0 - 2.0 * progress)
         start = -90.0 + 360.0 * offset
@@ -660,7 +667,7 @@ def _draw_card(gdiplus, graphics):
                     ctypes.c_float(start + sweep), ctypes.c_float(-sweep)
                 )
                 gdiplus.GdipClosePathFigure(slice_path)
-                slice_brush = _brush(gdiplus, PALETTE[index % len(PALETTE)])
+                slice_brush = _brush(gdiplus, rgb)
                 gdiplus.GdipFillPath(graphics, slice_brush, slice_path)
                 gdiplus.GdipDeletePath(slice_path)
         offset += fraction
@@ -683,7 +690,7 @@ def _draw_card(gdiplus, graphics):
     pct_x = W - 20.0 - pct_w
 
     for index, (model, _tokens, _requests) in enumerate(rows[:4]):
-        rgb = PALETTE[index % len(PALETTE)]
+        rgb = _get_model_color(model)
         # Dot
         gdiplus.GdipFillEllipse(graphics, _brush(gdiplus, rgb),
                                 ctypes.c_float(list_left), ctypes.c_float(row_y + 4.5),

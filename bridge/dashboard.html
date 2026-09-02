@@ -381,7 +381,18 @@ function vendorOf(id,model){
   return VENDOR_ICON[k]?k:"";
 }
 function vendorImg(v,cls){const f=VENDOR_ICON[v];return f?`<img ${cls?`class="${cls}" `:""}src="/dashboard/assets/${f}" alt="" onerror="this.style.display='none'">`:"";}
-const VPAL=["#8b6cf7","#39d353","#2bc8e6","#f5a623","#f26d6a","#a98bfa","#8bc34a","#f472b6"];
+const MODEL_COLORS={
+  "GLM-5.3-Flash":"#06b6d4",
+  "GLM-5.3":"#3b82f6",
+  "gemini-3.7-flash-high":"#22c55e",
+  "MiniMax-M3":"#f59e0b",
+  "k3":"#8b5cf6",
+  "GLM-5.2":"#64748b"
+};
+function modelColor(m){
+  if(!m)return"#8e8a9e";
+  return MODEL_COLORS[m]||"#8e8a9e";
+}
 function fmt(n){n=+n||0;if(n>=1e8)return(n/1e8).toFixed(2)+" 亿";if(n>=1e4){const v=(n/1e4).toFixed(1);return(v.endsWith(".0")?v.slice(0,-2):v)+" 万"}return n.toLocaleString()}
 function fmtT(ts){const d=new Date(ts*1000);const p=x=>String(x).padStart(2,"0");return`${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`}
 function fmtLat(ms){if(ms>=60000)return(ms/60000).toFixed(1)+"min";if(ms>=1000)return(ms/1000).toFixed(1)+"s";return Math.round(ms)+"ms"}
@@ -428,7 +439,7 @@ function renderTrend(daily){
   const n=days,ds=lastN(n,picked);const models=new Set();
   Object.values(daily).forEach(d=>Object.keys(d.models).forEach(m=>{if(m&&m!=="?")models.add(m)}));
   const mArr=[...models];
-  const color=m=>VPAL[mArr.indexOf(m)%VPAL.length];
+  const color=m=>modelColor(m);
   const rawMax=Math.max(0,...ds.map(d=>{const v=daily[dayKey(d)];return v?v.in+v.out:0}));
   const hasData=rawMax>0;
   const niceMax=v=>{if(v<=0)return 1;const p=Math.pow(10,Math.floor(Math.log10(v)));const f=v/p;const nf=f<=1?1:f<=2?2:f<=2.5?2.5:f<=5?5:10;return nf*p};
@@ -488,8 +499,9 @@ function renderDonut(models,animate){
   const total=models.reduce((a,m)=>a+m.tokens_total,0)||1;
   const R=58,C=2*Math.PI*R;let off=0,svg="",legend="";
   models.slice(0,6).forEach((m,i)=>{const frac=m.tokens_total/total;const len=Math.max(0.6,frac*C);
-    svg+=`<circle class="dseg" data-i="${i}" r="${R}" cx="88" cy="88" fill="none" stroke="${VPAL[i]}" stroke-width="21" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"/>`;
-    legend+=`<div class="row" data-i="${i}"><span class="dot" style="background:${VPAL[i]}"></span><span>${m.model}<span class="val">　${fmt(m.tokens_total)} · ${m.requests} 次</span></span><span class="pct">${(frac*100).toFixed(1)}%</span></div>`;off+=len});
+    const c=modelColor(m.model);
+    svg+=`<circle class="dseg" data-i="${i}" r="${R}" cx="88" cy="88" fill="none" stroke="${c}" stroke-width="21" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"/>`;
+    legend+=`<div class="row" data-i="${i}"><span class="dot" style="background:${c}"></span><span>${m.model}<span class="val">　${fmt(m.tokens_total)} · ${m.requests} 次</span></span><span class="pct">${(frac*100).toFixed(1)}%</span></div>`;off+=len});
   $("#donut").innerHTML=`<svg width="176" height="176" viewBox="0 0 176 176">${svg}<text x="88" y="84" text-anchor="middle" fill="#e8e7ed" font-size="17" font-weight="800">${fmt(total)}</text><text x="88" y="102" text-anchor="middle" fill="#63626e" font-size="10.5">tokens</text></svg>`;
   $("#modelLegend").innerHTML=legend||`<span style="color:var(--faint);font-size:12px">暂无数据</span>`;
   const segs=[...$("#donut").querySelectorAll(".dseg")],rows=[...$("#modelLegend").querySelectorAll(".row")];
