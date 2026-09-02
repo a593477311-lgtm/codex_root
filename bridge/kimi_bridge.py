@@ -246,6 +246,20 @@ def normalize_tool(t: dict) -> dict:
 
 def normalize_tools_list(tools: list) -> list:
     out = []
+    seen_names = set()
+
+    def _add(t_dict):
+        if not isinstance(t_dict, dict):
+            out.append(t_dict)
+            return
+        name = t_dict.get("name")
+        if name:
+            if name in seen_names:
+                log.debug("  skip duplicate tool declaration: %s", name)
+                return
+            seen_names.add(name)
+        out.append(t_dict)
+
     for t in tools:
         if not isinstance(t, dict):
             out.append(t)
@@ -258,14 +272,14 @@ def normalize_tools_list(tools: list) -> list:
                 if isinstance(sub, dict) and sub.get("type") == "function" and sub.get("name"):
                     st = {k: v for k, v in sub.items() if k != "defer_loading"}
                     _clean_tool_params(st, f"namespace tool[{ns}]")
-                    out.append(st)
                     learn_ns(sub["name"], ns)
+                    _add(st)
                     n += 1
                 else:
                     log.info("  skip subtool in namespace '%s': %r", ns, sub if not isinstance(sub, dict) else sub.get("type"))
             log.info("  flatten namespace '%s': %d function tools exposed", ns, n)
             continue
-        out.append(normalize_tool(t))
+        _add(normalize_tool(t))
     return out
 
 
