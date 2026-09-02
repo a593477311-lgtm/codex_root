@@ -371,8 +371,7 @@ def _run(icon_path, tooltip, url):
         cls.lpfnWndProc = ctypes.cast(_run.proc, ctypes.c_void_p)
         cls.hInstance = h_inst
         cls.lpszClassName = "CodexBridgeTray"
-        if not user32.RegisterClassW(ctypes.byref(cls)):
-            raise OSError("RegisterClassW failed")
+        user32.RegisterClassW(ctypes.byref(cls))
 
         WS_OVERLAPPED = 0x00000000
         hwnd = user32.CreateWindowExW(0, "CodexBridgeTray", "Codex Bridge",
