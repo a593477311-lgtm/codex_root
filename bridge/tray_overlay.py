@@ -77,6 +77,7 @@ MODEL_COLORS = {
     "GLM-5.3-Flash": 0x06B6D4,
     "GLM-5.3": 0x3B82F6,
     "gemini-3.7-flash-high": 0x22C55E,
+    "gemini-3.8-flash-high": 0x10B981,
     "MiniMax-M3": 0xF59E0B,
     "k3": 0x8B5CF6,
     "GLM-5.2": 0x64748B,

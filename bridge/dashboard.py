@@ -464,7 +464,7 @@ async def api_save_provider(request: Request):
         return JSONResponse({"ok": False, "error": "上游 Base URL 必须以 http:// 或 https:// 开头"}, status_code=400)
 
     if isinstance(raw_models, str):
-        models = [m.strip() for m in re.split(r"[,;\n\r]+", raw_models) if m.strip()]
+        models = [m.strip() for m in re.split(r"[,;\n\r，；]+", raw_models) if m.strip()]
     elif isinstance(raw_models, list):
         models = [str(m).strip() for m in raw_models if str(m).strip()]
     else:
