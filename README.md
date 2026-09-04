@@ -49,6 +49,10 @@
 * **协议安全改写与自学习**：
   * 完整修复 `tool_search` 孤儿调用、工具参数反向补全；
   * 动态学习双向流量中的 Function -> Namespace 映射并本地持久化，支持在控制台实时审查与单键删除。
+* **全渠道直连联网搜索**：
+  * `web_search` 优先走供应商官方直连搜索端点（智谱 `/paas/v4/web_search`、MiniMax `/v1/coding_plan/search`、Kimi `/v1/search`），结构化结果带真实 URL 与日期，零 LLM token、秒级返回；
+  * 直连全败自动落回 LLM 原生搜索链兜底，401/403（Key/配额）智能降级，同 query 10 分钟缓存复用；
+  * Codex 原生 UX 适配：`action.query + queries` 双填对齐客户端渲染形状，结果保留完整 URL 供模型生成可点击引用。
 
 ### 二、客户端底层加固系统 (`client_patches/`)
 * **配置防篡改 Patch**：解决 Codex Desktop 在与远端同步时强行通过 `config/batchWrite` 将 `features.js_repl` 反写为 `false` 的问题。

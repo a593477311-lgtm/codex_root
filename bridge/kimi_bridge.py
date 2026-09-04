@@ -88,7 +88,11 @@ SPECIAL_PARAMS = {
     },
     "web_search": {
         "type": "object",
-        "properties": {"query": {"type": "string", "description": "Search query"}},
+        "properties": {
+            "query": {"type": "string", "description": "Search query"},
+            "top_k": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5,
+                      "description": "Max number of results to return (default 5)"},
+        },
         "additionalProperties": True,
     },
 }
@@ -465,6 +469,16 @@ def normalize_body(raw: bytes) -> bytes:
 # a provider whose upstream natively executes {"type": "web_search"}.
 SEARCH_CAPABLE = ("gemini", "zhipu", "kimi", "minimax")
 _SEARCH_CACHE = {}                       # call_id -> final output text (results or note)
+_QUERY_CACHE = {}                        # (query_lower, top_k) -> (expires_at, text)
+_QUERY_TTL_SEC = 600                     # 同 query 10 分钟内复用真实结果（跨 call_id）
+
+# 直连搜索层：结构化结果、零 LLM token、秒级；失败自动落回 LLM 原生搜索链。
+# 端点均可由现有 provider upstream 推导，无需新增密钥：
+#   zhipu:    {up}/paas/v4/web_search      （search_std/pro/pro_sogou/pro_quark 多引擎）
+#   minimax:  {up}/v1/coding_plan/search   （Coding Plan MCP 搜索）
+#   kimi:     {up}/v1/search               （Coding Plan 内置 moonshot_search）
+DIRECT_SEARCH_CAPABLE = ("zhipu", "minimax", "kimi")
+DIRECT_SEARCH_CHAIN = ("zhipu", "minimax", "kimi")   # 默认优先级：实测速度/结构化程度排序
 
 # Responses 形状的按供应商额外载荷
 NATIVE_SEARCH_EXTRA = {"minimax": {"tool_choice": "required"}}
@@ -610,6 +624,130 @@ async def _native_search_gemini(pinfo, query):
         return None
 
 
+# --- 直连搜索执行器（零 LLM token，结构化结果） ---------------------------------
+
+def _log_search_http(pid, status):
+    """直连搜索 HTTP 错误分类：401/403 视为 key/配额问题，记降级事件。"""
+    if status in (401, 403):
+        log.warning("%s direct search: HTTP %s (key/quota), degrade to next provider", pid, status)
+        stats.note_event("web_search_degrade", f"{pid}-direct: HTTP {status}")
+    else:
+        log.warning("%s direct search: HTTP %s", pid, status)
+
+
+def _fmt_direct_results(items, *, title, link, snippet, date, site=None, limit=5):
+    """直连搜索结果归一化：编号 + URL + 日期 + 摘要。
+    Codex 客户端不渲染 call item 的来源列表，引用 UX 完全依赖模型正文里的
+    Markdown 链接——因此结果文本必须保留完整 URL 供模型生成可点击引用。"""
+    lines, n = [], 0
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        t = str(it.get(title) or "").strip()
+        u = str(it.get(link) or "").strip()
+        if not (t or u):
+            continue
+        n += 1
+        seg = [f"[{n}] {t or u}"]
+        if u:
+            seg.append(f"URL: {u}")
+        d = str(it.get(date) or "").strip()
+        if d:
+            seg.append(f"日期: {d}")
+        sn = str(it.get(snippet) or "").strip()
+        if sn:
+            seg.append(f"摘要: {sn}")
+        if site and str(it.get(site) or "").strip():
+            seg.append(f"来源: {str(it[site]).strip()}")
+        lines.append("\n".join(seg))
+        if n >= limit:
+            break
+    return "\n\n".join(lines).strip()[:6000] or None
+
+
+async def _search_zhipu_direct(pinfo, query, top_k=5):
+    """智谱 BigModel 官方直连搜索：/paas/v4/web_search，多引擎可选，
+    返回带 publish_date 的结构化 search_result[]。实测最快（~2.7s）。
+    默认 search_pro_quark：实测 link 覆盖 5/5（search_std/pro 经常空 link，
+    无 URL 无法生成 Codex 可点击引用）。"""
+    up = (pinfo.get("upstream") or "").rstrip("/")
+    key = pinfo.get("key")
+    if not (up and key and query):
+        return None
+    body = {
+        "search_query": query,
+        "search_engine": pinfo.get("search_engine") or "search_pro_quark",
+        "count": max(1, min(50, int(top_k))),
+        "search_intent": False,
+    }
+    try:
+        r = await client.post(f"{up}/paas/v4/web_search", json=body,
+                              headers={"Authorization": f"Bearer {key}"}, timeout=10)
+        if r.status_code != 200:
+            _log_search_http("zhipu", r.status_code)
+            return None
+        return _fmt_direct_results((r.json() or {}).get("search_result"),
+                                   title="title", link="link", snippet="content",
+                                   date="publish_date", site="media", limit=top_k)
+    except Exception as e:
+        log.warning("zhipu direct search failed: %s", e)
+        return None
+
+
+async def _search_minimax_direct(pinfo, query, top_k=5):
+    """MiniMax Coding Plan 官方直连搜索：/v1/coding_plan/search，
+    返回 organic[]（title/link/snippet/date）。国际域名（api.minimaxi.com）带日期。"""
+    up = (pinfo.get("upstream") or "").rstrip("/")
+    key = pinfo.get("key")
+    if not (up and key and query):
+        return None
+    url = pinfo.get("search_url") or f"{up}/v1/coding_plan/search"
+    try:
+        r = await client.post(url, json={"q": query},
+                              headers={"Authorization": f"Bearer {key}",
+                                       "MM-API-Source": "Minimax-MCP"}, timeout=10)
+        if r.status_code != 200:
+            _log_search_http("minimax", r.status_code)
+            return None
+        return _fmt_direct_results((r.json() or {}).get("organic"),
+                                   title="title", link="link", snippet="snippet",
+                                   date="date", limit=top_k)
+    except Exception as e:
+        log.warning("minimax direct search failed: %s", e)
+        return None
+
+
+async def _search_kimi_direct(pinfo, query, top_k=5):
+    """Kimi Coding Plan 内置搜索服务：/v1/search（kimi-cli 的 moonshot_search 同源）。
+    线路形状：{"text_query","limit"} -> {"search_results":[{title,url,snippet,date,site_name}]}。
+    403 = 周配额耗尽，自动降级下一家。"""
+    up = (pinfo.get("upstream") or "").rstrip("/")
+    key = pinfo.get("key")
+    if not (up and key and query):
+        return None
+    try:
+        r = await client.post(f"{up}/v1/search",
+                              json={"text_query": query, "limit": max(1, min(10, int(top_k)))},
+                              headers={"Authorization": f"Bearer {key}"}, timeout=10)
+        if r.status_code != 200:
+            _log_search_http("kimi", r.status_code)
+            return None
+        return _fmt_direct_results((r.json() or {}).get("search_results"),
+                                   title="title", link="url", snippet="snippet",
+                                   date="date", site="site_name", limit=top_k)
+    except Exception as e:
+        log.warning("kimi direct search failed: %s", e)
+        return None
+
+
+async def _direct_search(pid, pinfo, query, top_k=5):
+    """按供应商分发直连搜索；无直连能力（如 gemini）返回 None 落回 LLM 链。"""
+    fn = globals().get(f"_search_{pid}_direct")
+    if not (pid in DIRECT_SEARCH_CAPABLE and callable(fn)):
+        return None
+    return await fn(pinfo, query, top_k)
+
+
 def _extract_call_query(arguments) -> str:
     """从 web_search function_call 的 arguments 里取查询词（query 或 input 键）。"""
     try:
@@ -619,6 +757,20 @@ def _extract_call_query(arguments) -> str:
     if not isinstance(a, dict):
         return ""
     return str(a.get("query") or a.get("input") or "")
+
+
+def _extract_call_top_k(arguments) -> int:
+    """从 web_search function_call 的 arguments 里取 top_k（top_k 或 limit 键），默认 5。"""
+    try:
+        a = json.loads(arguments) if isinstance(arguments, str) else (arguments or {})
+    except Exception:
+        return 5
+    if not isinstance(a, dict):
+        return 5
+    try:
+        return max(1, min(10, int(a.get("top_k") or a.get("limit") or 5)))
+    except Exception:
+        return 5
 
 
 _DELEGATION_INPUT_RE = re.compile(
@@ -665,8 +817,9 @@ def _fallback_query(items) -> str:
     return (last_any or "").strip()[:300]
 
 
-async def _execute_search(query, items, chosen_pid, providers):
-    """按供应商链执行一次真实搜索；全链失败返回诚实的孤儿 note。"""
+async def _execute_search(query, items, chosen_pid, providers, top_k=5):
+    """执行一次真实搜索：直连层优先（快/省/结构化），全败落回 LLM 原生搜索链，
+    仍败返回诚实的孤儿 note。同 query 10 分钟内缓存复用（跨 call_id）。"""
     note = ORPHAN_NOTES["web_search"]
     q = (query or "").strip()
     if not q:
@@ -677,6 +830,31 @@ async def _execute_search(query, items, chosen_pid, providers):
         log.warning("web_search: no usable query (call noted, not executed)")
         stats.note_event("web_search_no_query", "empty query and no fallback")
         return note
+
+    ckey = (q.lower(), top_k)
+    hit = _QUERY_CACHE.get(ckey)
+    if hit and hit[0] > time.time():
+        log.info("  web_search: query cache hit (q=%s)", q[:40])
+        return hit[1]
+
+    # 1) 直连层：结构化结果、零 LLM token、秒级
+    dchain = []
+    for pid in (chosen_pid, *DIRECT_SEARCH_CHAIN):
+        if pid in DIRECT_SEARCH_CAPABLE and pid in providers and pid not in dchain:
+            dchain.append(pid)
+    for pid in dchain:
+        text = await _direct_search(pid, providers[pid], q, top_k)
+        # 质量门：结果须含真实 URL（Codex 引用 UX 依赖模型输出 Markdown 链接；
+        # 上游格式漂移/空 link 引擎返回无 URL 文本时自动顺延下一家）
+        if text and "URL: http" in text:
+            log.info("  web_search executed via provider '%s' (direct, q=%s)", pid, q[:40])
+            stats.note_event("web_search", f"{pid}-direct: {q[:60]}")
+            _QUERY_CACHE[ckey] = (time.time() + _QUERY_TTL_SEC, text)
+            return text
+        elif text:
+            log.warning("  web_search via %s-direct dropped: no URL in results (format drift?)", pid)
+
+    # 2) LLM 原生搜索链（兜底：直连全败/配额受限时）
     chain = []
     for pid in (chosen_pid, *SEARCH_CAPABLE):
         if pid in SEARCH_CAPABLE and pid in providers and pid not in chain:
@@ -686,6 +864,7 @@ async def _execute_search(query, items, chosen_pid, providers):
         if text:
             log.info("  web_search executed via provider '%s' (q=%s)", pid, q[:40])
             stats.note_event("web_search", f"{pid}: {q[:60]}")
+            _QUERY_CACHE[ckey] = (time.time() + _QUERY_TTL_SEC, text)
             return text
     return note
 
@@ -706,15 +885,16 @@ async def fulfill_web_searches(raw: bytes, chosen_pid, providers) -> bytes:
         if not isinstance(it, dict):
             continue
         if it.get("type") == "function_call" and it.get("name") == "web_search":
-            calls[it.get("call_id")] = _extract_call_query(it.get("arguments"))
+            calls[it.get("call_id")] = (_extract_call_query(it.get("arguments")),
+                                        _extract_call_top_k(it.get("arguments")))
         elif it.get("type") == "function_call_output" and it.get("output") == note and it.get("call_id") in calls:
-            targets.append((it.get("call_id"), calls[it["call_id"]], it))
+            targets.append((it.get("call_id"), *calls[it["call_id"]], it))
     if not targets:
         return raw
-    for cid, query, out_item in targets:
+    for cid, query, top_k, out_item in targets:
         if cid not in _SEARCH_CACHE:
             # 失败也缓存为 note，避免每轮重试拖慢会话
-            _SEARCH_CACHE[cid] = await _execute_search(query, items, chosen_pid, providers)
+            _SEARCH_CACHE[cid] = await _execute_search(query, items, chosen_pid, providers, top_k)
         if _SEARCH_CACHE[cid] != note:
             out_item["output"] = _SEARCH_CACHE[cid]
     return json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -757,7 +937,9 @@ def rewrite_output_item(item):
         if native["type"] == "web_search_call" and isinstance(args_obj, dict):
             q = args_obj.get("query") or args_obj.get("input")
             if q:
-                native["action"] = {"type": "search", "query": str(q)}
+                # 客户端解析器（zUr）优先读 query、兼容 queries 数组，双填零成本对齐官方形状
+                qs = str(q)
+                native["action"] = {"type": "search", "query": qs, "queries": [qs]}
         return native, True
     ns = name_to_ns.get(name)
     if ns and "namespace" not in item:
@@ -1164,7 +1346,7 @@ async def proxy(path: str, request: Request):
                     if call_id is not None and item.get("call_id") != call_id:
                         continue
                     if query is not None:
-                        item["action"] = {"type": "search", "query": query}
+                        item["action"] = {"type": "search", "query": query, "queries": [query]}
                     search_dones.remove(d)
                     rewriter._stamp(d)
                     log.info("  resp: web_search_call done (call_id=%s)", item.get("call_id"))
@@ -1227,9 +1409,10 @@ async def proxy(path: str, request: Request):
                         q = (_extract_call_query(it.get("arguments")) or "").strip()
                         if not q:
                             q = _fallback_query((body_obj.get("input") or []) + cont_items)
+                        tk = _extract_call_top_k(it.get("arguments"))
                         res = await _execute_search(q,
                                                     (body_obj.get("input") or []) + cont_items,
-                                                    chosen_pid, providers)
+                                                    chosen_pid, providers, tk)
                         cont_items.append({"type": "function_call_output",
                                            "call_id": it.get("call_id"), "output": res})
                         for chunk in _flush_ws_dones(it.get("call_id"), q or ""):
