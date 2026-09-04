@@ -263,6 +263,29 @@ def api_log_tail(lines: int = 200):
 
 # --- Provider, Model & Key Rotation Endpoints ---
 
+
+def _resolve_model_context_window(p):
+    """解析目标模型的上下文窗口：优先 provider.model_meta，其次 models.json 条目。
+    返回 None 表示未知（不动 config.toml 的全局键）。"""
+    meta = p.get("model_meta") or {}
+    if meta.get("context_window"):
+        try:
+            return int(meta["context_window"])
+        except (TypeError, ValueError):
+            pass
+    try:
+        mp = os.path.join(os.path.expanduser("~/.codex"), "models.json")
+        with open(mp, "r", encoding="utf-8") as f:
+            catalog = json.load(f)
+        target = p.get("active_model") or (p.get("models") or [None])[0]
+        for m in catalog.get("models", []):
+            if m.get("slug") == target and m.get("context_window"):
+                return int(m["context_window"])
+    except Exception:
+        pass
+    return None
+
+
 @router.get("/dashboard/api/providers")
 def api_get_providers():
     cfg = load_config()
@@ -344,14 +367,24 @@ async def api_switch_provider(request: Request):
             cfg_lines = f.readlines()
         new_lines = []
         replaced = False
+        ctx_window = _resolve_model_context_window(p)
+        replaced_ctx = False
         for line in cfg_lines:
-            if line.strip().startswith("model") and "=" in line and line.strip().split("=")[0].strip() == "model":
+            stripped = line.strip()
+            key = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+            if key == "model":
                 new_lines.append(f'model = "{active_model}"\n')
                 replaced = True
+            elif key == "model_context_window" and ctx_window:
+                # 同步全局窗口键为目标模型的实际窗口，消除 1M 全局压小窗模型
+                new_lines.append(f"model_context_window = {ctx_window}\n")
+                replaced_ctx = True
             else:
                 new_lines.append(line)
         if not replaced:
             new_lines.insert(0, f'model = "{active_model}"\n')
+        if ctx_window and not replaced_ctx:
+            new_lines.insert(1, f"model_context_window = {ctx_window}\n")
         tmp_cfg = config_file + ".tmp"
         with open(tmp_cfg, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
@@ -397,10 +430,31 @@ async def api_test_provider(request: Request):
         return {"ok": False, "status": 0, "latency_ms": lat, "message": f"探测超时或失败: {str(e)[:80]}"}
 
 
-def ensure_models_in_catalog(models: list):
-    """确保自定义模型在 ~/.codex/models.json 中注册，便于 Codex 客户端识别与展示"""
+_LEVEL_DESCRIPTIONS = {
+    "low": "Fast responses with lighter reasoning",
+    "medium": "Balances speed and reasoning depth for everyday tasks",
+    "high": "Greater reasoning depth for complex problems",
+    "xhigh": "Extra high reasoning depth for complex problems",
+}
+_VALID_LEVELS = ("low", "medium", "high", "xhigh")
+
+
+def _build_reasoning_levels(levels):
+    """把档位名列表生成 models.json 需要的完整对象数组。"""
+    return [{"effort": lv, "description": _LEVEL_DESCRIPTIONS[lv]}
+            for lv in levels if lv in _LEVEL_DESCRIPTIONS]
+
+
+def ensure_models_in_catalog(models: list, model_meta=None, models_json_path=None):
+    """确保自定义模型在 ~/.codex/models.json 中注册/更新，便于 Codex 客户端识别与展示。
+
+    model_meta 提供 {context_window, effective_context_window_percent,
+    reasoning_levels, default_reasoning_level} 时：
+    - 新模型：在模板基础上覆写这些能力字段；
+    - 已存在模型：同步更新这些能力字段（upsert，修复"只增不改"的 P3 遗留）。
+    """
     codex_dir = os.path.expanduser("~/.codex")
-    models_json = os.path.join(codex_dir, "models.json")
+    models_json = models_json_path or os.path.join(codex_dir, "models.json")
     if not os.path.exists(models_json):
         return
     try:
@@ -411,23 +465,22 @@ def ensure_models_in_catalog(models: list):
         if not template:
             return
 
-        std_levels = [
-            {"description": "Fast responses with lighter reasoning", "effort": "low"},
-            {"description": "Balances speed and reasoning depth for everyday tasks", "effort": "medium"},
-            {"description": "Greater reasoning depth for complex problems", "effort": "high"},
-            {"description": "Extra high reasoning depth for complex problems", "effort": "xhigh"}
-        ]
+        meta_levels = None
+        if isinstance(model_meta, dict) and model_meta.get("reasoning_levels"):
+            meta_levels = [lv for lv in model_meta["reasoning_levels"] if lv in _VALID_LEVELS]
 
         updated = False
         for m in models:
             m_str = str(m).strip()
-            if m_str and m_str not in existing:
+            if not m_str:
+                continue
+            if m_str not in existing:
                 new_m = copy.deepcopy(template)
                 new_m["slug"] = m_str
                 new_m["display_name"] = m_str
                 new_m["description"] = f"Custom Model: {m_str}"
-                new_m["supported_reasoning_levels"] = copy.deepcopy(std_levels)
-                new_m["default_reasoning_level"] = "medium"
+                new_m["supported_reasoning_levels"] = _build_reasoning_levels(meta_levels) if meta_levels else _build_reasoning_levels(_VALID_LEVELS)
+                new_m["default_reasoning_level"] = (model_meta or {}).get("default_reasoning_level") if meta_levels else "medium"
                 new_m["support_verbosity"] = True
                 old_name = template.get("slug", "k3")
                 if isinstance(new_m.get("base_instructions"), str):
@@ -435,9 +488,41 @@ def ensure_models_in_catalog(models: list):
                 mm = new_m.get("model_messages")
                 if isinstance(mm, dict) and isinstance(mm.get("instructions_template"), str):
                     mm["instructions_template"] = mm["instructions_template"].replace(old_name, m_str).replace("GPT-5", m_str)
+                if isinstance(model_meta, dict) and model_meta.get("context_window"):
+                    new_m["context_window"] = int(model_meta["context_window"])
+                    new_m["max_context_window"] = int(model_meta["context_window"])
+                if isinstance(model_meta, dict) and model_meta.get("effective_context_window_percent"):
+                    new_m["effective_context_window_percent"] = int(model_meta["effective_context_window_percent"])
                 data["models"].append(new_m)
                 existing[m_str] = new_m
                 updated = True
+            elif isinstance(model_meta, dict):
+                # upsert：已存在条目也同步能力字段（仅当 meta 提供时才触碰）
+                cur = existing[m_str]
+                changed = False
+                if model_meta.get("context_window"):
+                    cw = int(model_meta["context_window"])
+                    if cur.get("context_window") != cw:
+                        cur["context_window"] = cw
+                        cur["max_context_window"] = cw
+                        changed = True
+                if model_meta.get("effective_context_window_percent"):
+                    pct = int(model_meta["effective_context_window_percent"])
+                    if cur.get("effective_context_window_percent") != pct:
+                        cur["effective_context_window_percent"] = pct
+                        changed = True
+                if meta_levels:
+                    lv_objs = _build_reasoning_levels(meta_levels)
+                    if cur.get("supported_reasoning_levels") != lv_objs:
+                        cur["supported_reasoning_levels"] = lv_objs
+                        changed = True
+                    dl = model_meta.get("default_reasoning_level")
+                    if dl in meta_levels and cur.get("default_reasoning_level") != dl:
+                        cur["default_reasoning_level"] = dl
+                        changed = True
+                if changed:
+                    existing[m_str] = cur
+                    updated = True
         if updated:
             tmp_file = models_json + ".tmp"
             with open(tmp_file, "w", encoding="utf-8") as f:
@@ -473,6 +558,38 @@ async def api_save_provider(request: Request):
     if not models:
         models = [p_id]
 
+    # 模型能力元数据（上下文窗口 / 思考档位）——校验后随 provider 持久化
+    model_meta = data.get("model_meta") or {}
+    if not isinstance(model_meta, dict):
+        return JSONResponse({"ok": False, "error": "model_meta 必须是对象"}, status_code=400)
+    if model_meta:
+        try:
+            cw = int(model_meta.get("context_window") or 0)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "上下文长度必须是整数（token 数）"}, status_code=400)
+        if cw and not (4096 <= cw <= 10_000_000):
+            return JSONResponse({"ok": False, "error": "上下文长度必须在 4096 ~ 10000000 token 之间"}, status_code=400)
+        if cw:
+            model_meta["context_window"] = cw
+        else:
+            model_meta.pop("context_window", None)
+        try:
+            pct = int(model_meta.get("effective_context_window_percent") or 95)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "有效窗口百分比必须是整数"}, status_code=400)
+        if not (50 <= pct <= 99):
+            return JSONResponse({"ok": False, "error": "有效窗口百分比必须在 50 ~ 99 之间"}, status_code=400)
+        model_meta["effective_context_window_percent"] = pct
+        levels = [str(lv).lower() for lv in (model_meta.get("reasoning_levels") or [])]
+        levels = [lv for lv in levels if lv in _VALID_LEVELS]
+        if not levels:
+            return JSONResponse({"ok": False, "error": "至少勾选一个思考档位"}, status_code=400)
+        model_meta["reasoning_levels"] = levels
+        dl = str(model_meta.get("default_reasoning_level") or "").lower()
+        if dl not in levels:
+            dl = levels[0]
+        model_meta["default_reasoning_level"] = dl
+
     cfg = load_config()
     providers = cfg.get("providers", {})
     existing = providers.get(p_id, {})
@@ -488,13 +605,14 @@ async def api_save_provider(request: Request):
         "models": models,
         "active_model": active_model,
         "key": key if key else existing.get("key", ""),
+        "model_meta": model_meta if model_meta else existing.get("model_meta", {}),
         "custom": True
     }
     cfg["providers"] = providers
     save_config(cfg, backup=False)
 
-    # 自动将新增模型同步写入 models.json
-    ensure_models_in_catalog(models)
+    # 自动将模型同步写入/更新 models.json（携带能力元数据，upsert）
+    ensure_models_in_catalog(models, model_meta or None)
 
     return {"ok": True, "provider": providers[p_id]}
 

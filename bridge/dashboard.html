@@ -362,6 +362,18 @@ select.mf{background:#26252e;border:1px solid var(--border);border-radius:8px;co
     <div class="field" style="margin-bottom:12px"><div style="font-size:12px;color:var(--sub);margin-bottom:5px">上游 Base URL</div><input type="text" id="mProvUpstream" placeholder="https://api.deepseek.com" style="width:100%"></div>
     <div class="field" style="margin-bottom:12px"><div style="font-size:12px;color:var(--sub);margin-bottom:5px">模型列表（逗号分隔，第一个为默认生效模型）</div><input type="text" id="mProvModels" placeholder="deepseek-chat, deepseek-reasoner" style="width:100%"></div>
     <div class="field" style="margin-bottom:12px"><div style="font-size:12px;color:var(--sub);margin-bottom:5px">API Key</div><input type="text" id="mProvKey" placeholder="sk-..." style="width:100%"></div>
+    <div class="field" style="margin-bottom:12px"><div style="font-size:12px;color:var(--sub);margin-bottom:5px">上下文长度（token，留空 = 沿用模板 1M 默认）</div><input type="number" id="mProvCtx" placeholder="1048576" min="4096" max="10000000" step="1024" style="width:100%"></div>
+    <div class="field" style="margin-bottom:12px"><div style="font-size:12px;color:var(--sub);margin-bottom:5px">有效窗口百分比（客户端压缩阈值基准）</div><input type="number" id="mProvCtxPct" value="95" min="50" max="99" style="width:100%"></div>
+    <div class="field" style="margin-bottom:12px">
+      <div style="font-size:12px;color:var(--sub);margin-bottom:6px">思考档位（勾选客户端可见的推理档位）</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--ink)">
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="mProvLvLow" onchange="refreshDefLvOptions()" checked> low</label>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="mProvLvMedium" onchange="refreshDefLvOptions()" checked> medium</label>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="mProvLvHigh" onchange="refreshDefLvOptions()" checked> high</label>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="mProvLvXhigh" onchange="refreshDefLvOptions()" checked> xhigh</label>
+      </div>
+    </div>
+    <div class="field" style="margin-bottom:12px"><div style="font-size:12px;color:var(--sub);margin-bottom:5px">默认思考档位（新会话初始档位）</div><select id="mProvDefLv" style="width:100%"></select></div>
     <div id="modalPingResult" style="min-height:20px;font-size:12px;margin-bottom:10px"></div>
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button class="btn ghost" onclick="testModalPing()">测试连通</button>
@@ -812,7 +824,7 @@ function renderProviderUI(){
         <span class="prov-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.name || id}">${p.name || id}</span>
         ${isCustom ? `<span class="pill" style="font-size:9.5px;padding:0.5px 5px;margin-left:auto">自定义</span>` : ''}
       </div>
-      <div class="prov-model">${modelTag}</div>
+      <div class="prov-model">${modelTag} <span style="font-size:9.5px;color:var(--sub);margin-left:6px;opacity:.85">${metaBadge(p.model_meta)}${p.model_meta && p.model_meta.default_reasoning_level ? " · 默认" + lvShort(p.model_meta.default_reasoning_level) : ""}</span></div>
     </div>`;
   }).join("");
   
@@ -836,6 +848,23 @@ function renderProviderUI(){
 
   const pNotice = $("#pSaveNotice");
   if(pNotice) pNotice.textContent = "";
+}
+
+function ctxLabel(n){
+  if(!n) return "";
+  if(n >= 1048576 && n % 1048576 === 0) return (n / 1048576) + "M";
+  if(n >= 1024) return Math.round(n / 1024) + "K";
+  return "" + n;
+}
+
+function lvShort(lv){
+  return {low:"L", medium:"M", high:"H", xhigh:"XH"}[lv] || lv;
+}
+
+function metaBadge(mm){
+  const c = mm && mm.context_window ? ctxLabel(mm.context_window) : "1M";
+  const lvs = mm && mm.reasoning_levels && mm.reasoning_levels.length ? mm.reasoning_levels : ["low","medium","high","xhigh"];
+  return `${c} ctx · ${lvs.map(lvShort).join("/")}`;
 }
 
 function selectProvider(id){
@@ -927,6 +956,7 @@ function openAddProviderModal(){
   const upInp = $("#mProvUpstream"); if(upInp) upInp.value = "";
   const modInp = $("#mProvModels"); if(modInp) modInp.value = "";
   const keyInp = $("#mProvKey"); if(keyInp) keyInp.value = "";
+  fillModelMeta(null);
   const res = $("#modalPingResult"); if(res) res.innerHTML = "";
   const modal = $("#providerModal"); if(modal) modal.classList.remove("hidden");
 }
@@ -942,8 +972,38 @@ function openEditProviderModal(){
   const upInp = $("#mProvUpstream"); if(upInp) upInp.value = curP.upstream || "";
   const modInp = $("#mProvModels"); if(modInp) modInp.value = (curP.models || []).join(", ");
   const keyInp = $("#mProvKey"); if(keyInp) keyInp.value = curP.key || "";
+  fillModelMeta(curP.model_meta || null);
   const res = $("#modalPingResult"); if(res) res.innerHTML = "";
   const modal = $("#providerModal"); if(modal) modal.classList.remove("hidden");
+}
+
+function fillModelMeta(mm){
+  const ctx = $("#mProvCtx"); if(ctx) ctx.value = mm && mm.context_window ? mm.context_window : "";
+  const pct = $("#mProvCtxPct"); if(pct) pct.value = mm && mm.effective_context_window_percent ? mm.effective_context_window_percent : 95;
+  const lvs = mm && mm.reasoning_levels && mm.reasoning_levels.length ? mm.reasoning_levels : ["low","medium","high","xhigh"];
+  const box = {low:"mProvLvLow", medium:"mProvLvMedium", high:"mProvLvHigh", xhigh:"mProvLvXhigh"};
+  for(const k in box){ const el = $("#" + box[k]); if(el) el.checked = lvs.includes(k); }
+  refreshDefLvOptions(mm ? mm.default_reasoning_level : "medium");
+}
+
+function refreshDefLvOptions(preselect){
+  const sel = $("#mProvDefLv"); if(!sel) return;
+  const box = {low:"mProvLvLow", medium:"mProvLvMedium", high:"mProvLvHigh", xhigh:"mProvLvXhigh"};
+  const chosen = Object.keys(box).filter(k => { const el = $("#" + box[k]); return el && el.checked; });
+  const want = preselect && chosen.includes(preselect) ? preselect : (chosen[0] || "medium");
+  sel.innerHTML = chosen.map(lv => `<option value="${lv}" ${lv===want?"selected":""}>${lv}</option>`).join("");
+}
+
+function collectModelMeta(){
+  const ctxEl = $("#mProvCtx");
+  const pctEl = $("#mProvCtxPct");
+  const ctx = ctxEl && ctxEl.value ? parseInt(ctxEl.value, 10) : null;
+  const pct = pctEl && pctEl.value ? parseInt(pctEl.value, 10) : 95;
+  const box = {low:"mProvLvLow", medium:"mProvLvMedium", high:"mProvLvHigh", xhigh:"mProvLvXhigh"};
+  const levels = Object.keys(box).filter(k => { const el = $("#" + box[k]); return el && el.checked; });
+  const defEl = $("#mProvDefLv");
+  const dl = defEl ? defEl.value : (levels[0] || "medium");
+  return {context_window: ctx, effective_context_window_percent: pct, reasoning_levels: levels, default_reasoning_level: dl};
 }
 
 function closeProviderModal(){
@@ -1012,7 +1072,7 @@ async function saveCustomProvider(){
     const r = await fetch("/dashboard/api/save-provider", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({id, name, upstream, models, key, active_model: models[0]})
+      body: JSON.stringify({id, name, upstream, models, key, active_model: models[0], model_meta: collectModelMeta()})
     });
     const j = await r.json();
     if(j.ok){
